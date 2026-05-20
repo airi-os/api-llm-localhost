@@ -48,8 +48,18 @@ const EXPLORE_FACTOR = 0.15;
 // is secondary — a fast model with equal reliability should win.
 const SPEED_WEIGHT = 0.3;
 
-// Neutral speed prior for models with no successful requests yet.
-const SPEED_PRIOR = 0.5;
+// Optimistic speed prior for models with no successful history yet.
+// UCB principle: be optimistic under uncertainty — assume as fast as the fastest
+// known model until data proves otherwise. Using 0.5 (pessimistic) was penalising
+// untested models and preventing them from ever being tried.
+const SPEED_PRIOR = 1.0;
+
+// Maximum positions analytics can shift a model up or down from its configured
+// base priority. Keeping this small ensures analytics is a soft tie-breaker
+// rather than a winner-takes-all override. Without a cap, a model with even a
+// slight track record advantage gets scaled by the full chain length (~50) and
+// permanently locks out every competitor.
+const ANALYTICS_SHIFT_CAP = 5;
 
 interface ModelStats {
   successes: number;
@@ -271,16 +281,16 @@ export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, pre
     ORDER BY fc.priority ASC
   `).all() as ChainRow[];
 
-  // Score each entry. analyticsBias converts a [0,∞) score into a priority
-  // adjustment: a perfect model gets 0 bias (stays at base priority), a
-  // fully-failed one gets pushed back by up to chain.length positions.
-  const N = chain.length;
+  // Score each entry. analyticsBias nudges a model up (negative) or down
+  // (positive) relative to its configured base priority, capped at
+  // ANALYTICS_SHIFT_CAP so that a model's track record can never completely
+  // override the user's intended ordering.
   const sorted = chain.map(entry => ({
     ...entry,
     effectivePriority:
       entry.priority
       + getPenalty(entry.model_db_id)
-      + (1 - getAnalyticsScore(entry.platform, entry.model_id)) * N,
+      + (1 - getAnalyticsScore(entry.platform, entry.model_id)) * ANALYTICS_SHIFT_CAP,
   })).sort((a, b) => a.effectivePriority - b.effectivePriority);
 
   // Sticky session: force preferred model to the front regardless of score
