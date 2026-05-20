@@ -36,12 +36,18 @@ function getStickyModel(messages: ChatMessage[]): number | undefined {
   if (!key) return undefined;
 
   const entry = stickySessionMap.get(key);
-  if (!entry) return undefined;
+  if (!entry) {
+    console.log(`[Sticky] miss key=${key.slice(0, 8)} | msgs=${messages.length} → free routing`);
+    return undefined;
+  }
 
   if (Date.now() - entry.lastUsed > STICKY_TTL_MS) {
     stickySessionMap.delete(key);
+    console.log(`[Sticky] expired key=${key.slice(0, 8)} | msgs=${messages.length} → free routing`);
     return undefined;
   }
+
+  console.log(`[Sticky] hit key=${key.slice(0, 8)} | msgs=${messages.length} → modelDbId=${entry.modelDbId}`);
   return entry.modelDbId;
 }
 
@@ -49,8 +55,8 @@ function setStickyModel(messages: ChatMessage[], modelDbId: number) {
   const key = getSessionKey(messages);
   if (!key) return;
   stickySessionMap.set(key, { modelDbId, lastUsed: Date.now() });
+  console.log(`[Sticky] set key=${key.slice(0, 8)} | msgs=${messages.length} → modelDbId=${modelDbId}`);
 
-  // Cleanup old entries
   if (stickySessionMap.size > 500) {
     const now = Date.now();
     for (const [k, v] of stickySessionMap) {
