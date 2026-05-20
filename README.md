@@ -65,7 +65,7 @@ The problem is that stacking them by hand is painful: fourteen different SDKs, f
 - **OpenAI-compatible** — `POST /v1/chat/completions` and `GET /v1/models` work with the official OpenAI SDKs and any OpenAI-compatible client (LangChain, LlamaIndex, Continue, Hermes, etc.). Just change `base_url`.
 - **Streaming and non-streaming** — Server-Sent Events for `stream: true`, JSON response otherwise. Every provider adapter implements both.
 - **Tool calling** — OpenAI-style `tools` / `tool_choice` requests are passed through, and assistant `tool_calls` + `tool` role follow-up messages round-trip across providers.
-- **Thompson-sampling router** — Each request draws a score from each model's Beta posterior (`Beta(successes + 2, failures + 2)`), adds a normalized tok/s speed term, and subtracts any active rate-limit penalty. The stochastic draw means better models win more often without locking out unproven ones — exploration is automatic and proportional to uncertainty. The dashboard shows the deterministic Bayesian mean of the same posterior for human readability.
+- **Thompson-sampling router** — Each request draws a score from each model's Beta posterior (`Beta(successes + 2, failures + 2)`), adds a normalized tok/s speed term, and subtracts any active rate-limit penalty. The stochastic draw means better models win more often without locking out unproven ones — exploration is automatic and proportional to uncertainty. The dashboard shows the deterministic Bayesian mean of the same posterior for human readability. Rate-limit penalties are model-scoped but only applied once all keys for that model are exhausted — a single key hitting a 429 does not down-rank the model if other keys remain available.
 - **Automatic fallover** — If the chosen provider returns a 429, 5xx, or times out, the router skips it, puts the key on a short cooldown, and retries on the next model in your fallback chain (up to 20 attempts).
 - **Per-key rate tracking** — RPM, RPD, TPM, and TPD counters per `(platform, model, key)` so the router always picks a key that's under its caps.
 - **Sticky sessions** — Multi-turn conversations keep talking to the same model for 30 minutes to avoid the hallucination spike that comes from mid-conversation model switches.
@@ -262,7 +262,9 @@ Request volume, success rate, tokens in and out, average latency, and per-provid
                              │   2. Sort descending; sticky session pins preferred. │
                              │   3. First model with a healthy, under-limit key     │
                              │      wins; decrypt key, call provider SDK.           │
-                             │   4. On 429/5xx → cooldown + retry next model.      │
+                             │   4. On 429/5xx → key cooldown + retry next key.    │
+                             │      Model penalty only fires when all keys for      │
+                             │      that model are exhausted by 429s.               │
                              └──────────────────────────────────────────────────────┘
                                           │
    ┌──────────────┬────────────┬──────────┴─────────┬─────────────┬──────────┐
@@ -270,7 +272,7 @@ Request volume, success rate, tokens in and out, average latency, and per-provid
  Google         Groq        Cerebras           OpenRouter        HF       …10 more
 ```
 
-- **Router** (`server/src/services/router.ts`) — Thompson-sampling multi-armed bandit. Samples from each model's Beta posterior over success rate, adds a normalized tok/s speed reward (models below 10 tok/s receive an active penalty), and subtracts a time-decaying rate-limit penalty for recent 429s. Stochastic selection means the router naturally explores new models while converging on faster, more reliable ones as data accumulates.
+- **Router** (`server/src/services/router.ts`) — Thompson-sampling multi-armed bandit. Samples from each model's Beta posterior over success rate, adds a normalized tok/s speed reward (models below 10 tok/s receive an active penalty), and subtracts a time-decaying rate-limit penalty for recent 429s. The bandit penalty is model-scoped and fires only when all keys for a model are exhausted by 429s in the current retry loop — a single key rate-limiting does not demote the model if other keys remain. Stochastic selection means the router naturally explores new models while converging on faster, more reliable ones as data accumulates.
 - **Rate-limit ledger** (`server/src/services/ratelimit.ts`) — in-memory RPM/RPD/TPM/TPD counters backed by SQLite, with cooldowns on 429s.
 - **Provider adapters** (`server/src/providers/*.ts`) — one file per provider, implementing the `Provider` base class: `chatCompletion()` and `streamChatCompletion()`.
 - **Health service** (`server/src/services/health.ts`) — periodic probe keeps key status fresh.

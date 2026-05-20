@@ -412,13 +412,17 @@ export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, pre
 
     const rrKey = `${entry.platform}:${entry.model_id}`;
     let idx = roundRobinIndex.get(rrKey) ?? 0;
+    let exhaustedBy429 = false;
 
     for (let attempt = 0; attempt < keys.length; attempt++) {
       const key = keys[idx % keys.length];
       idx++;
 
       const skipId = `${entry.platform}:${entry.model_id}:${key.id}`;
-      if (skipKeys?.has(skipId)) continue;
+      if (skipKeys?.has(skipId)) {
+        exhaustedBy429 = true;
+        continue;
+      }
       if (isOnCooldown(entry.platform, entry.model_id, key.id)) continue;
       if (!canMakeRequest(entry.platform, entry.model_id, key.id, limits)) continue;
       if (!canUseTokens(entry.platform, entry.model_id, key.id, estimatedTokens, limits)) continue;
@@ -437,6 +441,9 @@ export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, pre
       };
     }
 
+    // Only penalise the model in the bandit once all its keys are exhausted
+    // by 429s — a single key failing doesn't mean the model is overloaded.
+    if (exhaustedBy429) recordRateLimitHit(entry.model_db_id);
     roundRobinIndex.set(rrKey, idx);
   }
 

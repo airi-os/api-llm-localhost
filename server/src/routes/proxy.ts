@@ -3,7 +3,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { ChatCompletionChunk, ChatCompletionResponse, ChatMessage, ChatToolCall, ChatToolDefinition } from '@freellmapi/shared/types.js';
-import { routeRequest, recordRateLimitHit, recordSuccess, type RouteResult } from '../services/router.js';
+import { routeRequest, recordSuccess, type RouteResult } from '../services/router.js';
 import { recordRequest, recordTokens, setCooldown } from '../services/ratelimit.js';
 import { getDb, getUnifiedApiKey } from '../db/index.js';
 import { extractBearerToken, timingSafeStringEqual } from '../lib/secrets.js';
@@ -1086,7 +1086,6 @@ async function handleChatCompletion(
         const skipId = `${route.platform}:${route.modelId}:${route.keyId}`;
         skipKeys.add(skipId);
         setCooldown(route.platform, route.modelId, route.keyId, 120_000);
-        recordRateLimitHit(route.modelDbId);
         lastError = err;
         console.log(`[Proxy] ${err.message.slice(0, 60)} from ${route.displayName}, falling back (attempt ${attempt + 1}/${MAX_RETRIES})`);
         continue;

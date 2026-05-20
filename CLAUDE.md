@@ -49,7 +49,7 @@ The server serves the built client SPA as static files — in production there i
 
 ### Key architectural concepts
 
-**Thompson Sampling router** (`services/router.ts`): Routes requests across models using a Bayesian bandit. Each model maintains a Beta posterior over success rates; stochastic sampling ensures exploration. Scores also incorporate a normalized tok/s speed signal. Models receive a dynamic penalty for 429s that decays over time.
+**Thompson Sampling router** (`services/router.ts`): Routes requests across models using a Bayesian bandit. Each model maintains a Beta posterior over success rates; stochastic sampling ensures exploration. Scores also incorporate a normalized tok/s speed signal. Models receive a dynamic penalty for 429s that decays over time. The penalty is applied inside `routeRequest` only when **all** keys for a model are exhausted by 429s — a single key failing does not penalise the model if other keys remain. Per-key 429s are handled by `skipKeys` and `setCooldown` in `proxy.ts`; the model-level bandit penalty fires once the key-loop sets `exhaustedBy429 = true`.
 
 **Sticky sessions**: Multi-turn conversations are pinned to the same model (keyed on a SHA-1 hash of the first user message) to prevent hallucination from mid-conversation model switches. TTL is 30 minutes.
 
