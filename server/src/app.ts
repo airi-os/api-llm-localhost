@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { type Express } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import path from 'path';
@@ -14,7 +14,7 @@ import { errorHandler } from './middleware/errorHandler.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-export function createApp() {
+export function createApp(): Express {
   const app = express();
 
   // CSP intentionally disabled — the SPA bundles inline styles and the OG

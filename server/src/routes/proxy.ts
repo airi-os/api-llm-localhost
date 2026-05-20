@@ -7,7 +7,7 @@ import { routeRequest, recordRateLimitHit, recordSuccess, type RouteResult } fro
 import { recordRequest, recordTokens, setCooldown } from '../services/ratelimit.js';
 import { getDb, getUnifiedApiKey } from '../db/index.js';
 
-export const proxyRouter = Router();
+export const proxyRouter: Router = Router();
 
 // Constant-time string comparison for the unified API key. Plain `===` leaks
 // length and per-character timing, which a network attacker could in principle

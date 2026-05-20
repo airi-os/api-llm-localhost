@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { getDb } from '../db/index.js';
 import { getAllPenalties, getAnalyticsScores, getAnalyticsScore, refreshStatsCache, PENALTY_SCORE_WEIGHT } from '../services/router.js';
 
-export const fallbackRouter = Router();
+export const fallbackRouter: Router = Router();
 
 fallbackRouter.get('/', (_req: Request, res: Response) => {
   const db = getDb();

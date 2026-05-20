@@ -2,7 +2,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { getDb } from '../db/index.js';
 
-export const analyticsRouter = Router();
+export const analyticsRouter: Router = Router();
 
 // Map range to a JS-computed ISO timestamp passed as a bind parameter,
 // so the SQL string never includes user-controlled fragments.
