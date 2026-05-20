@@ -219,58 +219,57 @@ export default function KeysPage() {
 
         <section>
           <h2 className="text-sm font-medium mb-3">Add a provider key</h2>
-          <form onSubmit={handleSubmit} className="flex flex-wrap items-end gap-3 rounded-lg border p-4 bg-card">
-            <div className="space-y-1.5">
-              <Label className="text-xs">Platform</Label>
-              <Select value={platform} onValueChange={(v) => setPlatform(v as Platform)}>
-                <SelectTrigger className="w-[220px]">
-                  <SelectValue placeholder="Select provider" />
-                </SelectTrigger>
-                <SelectContent>
-                  {PLATFORMS.map(p => (
-                    <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+          <form
+            onSubmit={handleSubmit}
+            className="rounded-lg border p-4 bg-card grid items-end gap-x-3 gap-y-1.5"
+            style={{ gridTemplateColumns: needsAccountId ? '220px 180px 1fr 140px auto' : '220px 1fr 140px auto' }}
+          >
+            {/* Labels row */}
+            <Label className="text-xs">Platform</Label>
+            {needsAccountId && <Label className="text-xs">Account ID</Label>}
+            <Label className="text-xs">
+              {selectedPlatformKeyUrl ? (
+                <a href={selectedPlatformKeyUrl} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2 decoration-muted-foreground/50 hover:decoration-foreground transition-colors">
+                  {needsAccountId ? 'API token' : 'API key'}
+                </a>
+              ) : (
+                needsAccountId ? 'API token' : 'API key'
+              )}
+            </Label>
+            <Label className="text-xs">Label</Label>
+            <div />
+
+            {/* Controls row */}
+            <Select value={platform} onValueChange={(v) => setPlatform(v as Platform)}>
+              <SelectTrigger className="h-9">
+                <SelectValue placeholder="Select provider" />
+              </SelectTrigger>
+              <SelectContent>
+                {PLATFORMS.map(p => (
+                  <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             {needsAccountId && (
-              <div className="space-y-1.5">
-                <Label className="text-xs">Account ID</Label>
-                <Input
-                  value={accountId}
-                  onChange={e => setAccountId(e.target.value)}
-                  placeholder="a1b2c3d4…"
-                  className="w-[200px] font-mono text-xs"
-                />
-              </div>
-            )}
-            <div className="space-y-1.5 flex-1 min-w-[240px]">
-              <Label className="text-xs">
-                {selectedPlatformKeyUrl ? (
-                  <a href={selectedPlatformKeyUrl} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2 decoration-muted-foreground/50 hover:decoration-foreground transition-colors">
-                    {needsAccountId ? 'API token' : 'API key'}
-                  </a>
-                ) : (
-                  needsAccountId ? 'API token' : 'API key'
-                )}
-              </Label>
               <Input
-                type="password"
-                value={apiKey}
-                onChange={e => setApiKey(e.target.value)}
-                placeholder={needsAccountId ? 'Bearer token' : 'paste key here'}
+                value={accountId}
+                onChange={e => setAccountId(e.target.value)}
+                placeholder="a1b2c3d4…"
                 className="font-mono text-xs"
               />
-            </div>
-            <div className="space-y-1.5">
-              <Label className="text-xs">Label</Label>
-              <Input
-                value={label}
-                onChange={e => setLabel(e.target.value)}
-                placeholder="optional"
-                className="w-[160px]"
-              />
-            </div>
+            )}
+            <Input
+              type="password"
+              value={apiKey}
+              onChange={e => setApiKey(e.target.value)}
+              placeholder={needsAccountId ? 'Bearer token' : 'paste key here'}
+              className="font-mono text-xs"
+            />
+            <Input
+              value={label}
+              onChange={e => setLabel(e.target.value)}
+              placeholder="optional"
+            />
             <Button type="submit" size="sm" disabled={!platform || !apiKey || (needsAccountId && !accountId) || addKey.isPending}>
               {addKey.isPending ? 'Adding…' : 'Add key'}
             </Button>
