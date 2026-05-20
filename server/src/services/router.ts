@@ -3,9 +3,11 @@ import { getProvider } from '../providers/index.js';
 import { decrypt } from '../lib/crypto.js';
 import { canMakeRequest, canUseTokens, isOnCooldown } from './ratelimit.js';
 import type { BaseProvider } from '../providers/base.js';
+import type { Database } from 'better-sqlite3';
 
-interface ModelRow {
-  id: number;
+interface ChainRow {
+  model_db_id: number;
+  priority: number;
   platform: string;
   model_id: string;
   display_name: string;
@@ -25,10 +27,128 @@ interface KeyRow {
   enabled: number;
 }
 
-interface FallbackRow {
-  model_db_id: number;
-  priority: number;
-  enabled: number;
+// ── Analytics-based routing ────────────────────────────────────────────────
+// Bayesian success rate + UCB exploration so the router prefers models that
+// historically succeed while still probing lesser-known ones.
+
+const ANALYTICS_WINDOW_MS = 24 * 60 * 60 * 1000; // look-back window for stats
+const ANALYTICS_CACHE_TTL_MS = 60 * 1000;         // re-query at most once per minute
+
+// Beta prior: equivalent to having seen PRIOR_TOTAL observations with a 50% rate.
+// Ensures models with no history get a neutral score rather than being ranked
+// as perfect or terrible.
+const PRIOR_SUCCESS = 2;
+const PRIOR_TOTAL = 4;
+
+// UCB exploration constant. Scales the bonus that pulls under-sampled models up.
+const EXPLORE_FACTOR = 0.15;
+
+// Weight of the normalized speed signal relative to the success-rate signal.
+// Success rate is the primary gate (broken models must not be chosen); speed
+// is secondary — a fast model with equal reliability should win.
+const SPEED_WEIGHT = 0.3;
+
+// Neutral speed prior for models with no successful requests yet.
+const SPEED_PRIOR = 0.5;
+
+interface ModelStats {
+  successes: number;
+  total: number;
+  tokPerSec: number; // output tok/s from successful requests only
+}
+
+let statsCache: Map<string, ModelStats> | null = null;
+let statsCacheTime = 0;
+let totalGlobalRequests = 0;
+let maxTokPerSec = 0; // normalisation denominator for speed scores
+
+function refreshStatsCache(db: Database): void {
+  if (statsCache && Date.now() - statsCacheTime < ANALYTICS_CACHE_TTL_MS) return;
+
+  const since = new Date(Date.now() - ANALYTICS_WINDOW_MS).toISOString();
+  const rows = db.prepare(`
+    SELECT platform, model_id,
+      COUNT(*) as total,
+      SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as successes,
+      CASE
+        WHEN SUM(CASE WHEN status = 'success' THEN latency_ms ELSE 0 END) > 0
+        THEN SUM(CASE WHEN status = 'success' THEN output_tokens ELSE 0 END) * 1000.0
+             / SUM(CASE WHEN status = 'success' THEN latency_ms ELSE 0 END)
+        ELSE 0
+      END as tok_per_sec
+    FROM requests
+    WHERE created_at >= ?
+    GROUP BY platform, model_id
+  `).all(since) as Array<{ platform: string; model_id: string; total: number; successes: number; tok_per_sec: number }>;
+
+  statsCache = new Map();
+  totalGlobalRequests = 0;
+  maxTokPerSec = 0;
+  for (const row of rows) {
+    statsCache.set(`${row.platform}:${row.model_id}`, {
+      successes: row.successes,
+      total: row.total,
+      tokPerSec: row.tok_per_sec,
+    });
+    totalGlobalRequests += row.total;
+    if (row.tok_per_sec > maxTokPerSec) maxTokPerSec = row.tok_per_sec;
+  }
+  statsCacheTime = Date.now();
+}
+
+function getAnalyticsScore(platform: string, modelId: string): number {
+  const stats = statsCache?.get(`${platform}:${modelId}`);
+  const total = stats?.total ?? 0;
+  const successes = stats?.successes ?? 0;
+
+  const bayesRate = (successes + PRIOR_SUCCESS) / (total + PRIOR_TOTAL);
+  // UCB bonus: large when model is rarely observed, shrinks with more data
+  const explorationBonus = EXPLORE_FACTOR * Math.sqrt(Math.log(totalGlobalRequests + 1) / (total + 1));
+  const successScore = bayesRate + explorationBonus;
+
+  // Normalise speed to [0, 1] relative to the fastest observed model.
+  // Falls back to a neutral prior when no successful data exists yet.
+  const speedScore = (maxTokPerSec > 0 && stats && stats.tokPerSec > 0)
+    ? stats.tokPerSec / maxTokPerSec
+    : SPEED_PRIOR;
+
+  return successScore + SPEED_WEIGHT * speedScore;
+}
+
+/**
+ * Returns current analytics scores for every (platform, model_id) pair seen in
+ * the last 24 h. Used by the fallback dashboard to surface routing rationale.
+ */
+export function getAnalyticsScores(): Array<{
+  platform: string;
+  modelId: string;
+  score: number;
+  successRate: number;
+  total: number;
+  tokPerSec: number;
+}> {
+  if (!statsCache) return [];
+  const result: Array<{
+    platform: string;
+    modelId: string;
+    score: number;
+    successRate: number;
+    total: number;
+    tokPerSec: number;
+  }> = [];
+  for (const [key, stats] of statsCache) {
+    const [platform, ...rest] = key.split(':');
+    const modelId = rest.join(':');
+    result.push({
+      platform,
+      modelId,
+      score: getAnalyticsScore(platform, modelId),
+      successRate: stats.total > 0 ? stats.successes / stats.total : 0,
+      total: stats.total,
+      tokPerSec: stats.tokPerSec,
+    });
+  }
+  return result.sort((a, b) => b.score - a.score);
 }
 
 export interface RouteResult {
@@ -121,106 +241,102 @@ export function getAllPenalties(): Array<{ modelDbId: number; count: number; pen
 
 /**
  * Route a request to the best available model.
- * Models are sorted by (base_priority + rate_limit_penalty) so frequently
- * rate-limited models automatically sink below working ones.
  *
- * If preferredModelDbId is set, that model gets tried FIRST (sticky sessions).
- * This prevents hallucination from model switching mid-conversation.
+ * Ordering combines three signals (all lower = tried first):
+ *   1. Analytics bias   — derived from recent success rate + UCB exploration bonus
+ *   2. Rate-limit penalty — in-session 429 counter with time decay
+ *   3. Base priority    — user-configured fallback order
  *
- * @param estimatedTokens - estimated total tokens for rate limit check
- * @param skipKeys - set of "platform:modelId:keyId" to skip (failed on this request)
- * @param preferredModelDbId - try this model first (sticky session)
+ * If preferredModelDbId is set, that model is forced to the front (sticky sessions)
+ * to prevent hallucination from model switching mid-conversation.
+ *
+ * @param estimatedTokens - estimated total tokens for rate-limit pre-check
+ * @param skipKeys - "platform:modelId:keyId" triples to skip (already failed this request)
+ * @param preferredModelDbId - pin this model to position 0 (sticky session)
  */
 export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, preferredModelDbId?: number): RouteResult {
   const db = getDb();
 
-  // Get fallback chain ordered by priority
-  const fallbackChain = db.prepare(`
-    SELECT fc.model_db_id, fc.priority, fc.enabled
-    FROM fallback_config fc
-    ORDER BY fc.priority ASC
-  `).all() as FallbackRow[];
+  // Refresh analytics cache (no-op if called within the TTL window)
+  refreshStatsCache(db);
 
-  // Apply dynamic penalties: sort by (base priority + penalty)
-  const sortedChain = fallbackChain.map(entry => ({
+  // Single query: join fallback config with model details, filtering out disabled rows
+  const chain = db.prepare(`
+    SELECT fc.model_db_id, fc.priority,
+           m.platform, m.model_id, m.display_name,
+           m.rpm_limit, m.rpd_limit, m.tpm_limit, m.tpd_limit
+    FROM fallback_config fc
+    JOIN models m ON m.id = fc.model_db_id AND m.enabled = 1
+    WHERE fc.enabled = 1
+    ORDER BY fc.priority ASC
+  `).all() as ChainRow[];
+
+  // Score each entry. analyticsBias converts a [0,∞) score into a priority
+  // adjustment: a perfect model gets 0 bias (stays at base priority), a
+  // fully-failed one gets pushed back by up to chain.length positions.
+  const N = chain.length;
+  const sorted = chain.map(entry => ({
     ...entry,
-    effectivePriority: entry.priority + getPenalty(entry.model_db_id),
+    effectivePriority:
+      entry.priority
+      + getPenalty(entry.model_db_id)
+      + (1 - getAnalyticsScore(entry.platform, entry.model_id)) * N,
   })).sort((a, b) => a.effectivePriority - b.effectivePriority);
 
-  // Sticky session: move preferred model to front of chain
+  // Sticky session: force preferred model to the front regardless of score
   if (preferredModelDbId) {
-    const idx = sortedChain.findIndex(e => e.model_db_id === preferredModelDbId);
+    const idx = sorted.findIndex(e => e.model_db_id === preferredModelDbId);
     if (idx > 0) {
-      const [preferred] = sortedChain.splice(idx, 1);
-      sortedChain.unshift(preferred);
+      const [preferred] = sorted.splice(idx, 1);
+      sorted.unshift(preferred);
     }
   }
 
-  for (const entry of sortedChain) {
-    if (!entry.enabled) continue;
-
-    // Get model details
-    const model = db.prepare('SELECT * FROM models WHERE id = ? AND enabled = 1').get(entry.model_db_id) as ModelRow | undefined;
-    if (!model) continue;
-
-    // Check if we have a provider for this platform
-    const provider = getProvider(model.platform as any);
+  for (const entry of sorted) {
+    const provider = getProvider(entry.platform as any);
     if (!provider) continue;
 
-    // Get all healthy, enabled keys for this platform
     const keys = db.prepare(
       'SELECT * FROM api_keys WHERE platform = ? AND enabled = 1 AND status != ?'
-    ).all(model.platform, 'invalid') as KeyRow[];
+    ).all(entry.platform, 'invalid') as KeyRow[];
 
     if (keys.length === 0) continue;
 
-    // Get limits once for this model
     const limits = {
-      rpm: model.rpm_limit,
-      rpd: model.rpd_limit,
-      tpm: model.tpm_limit,
-      tpd: model.tpd_limit,
+      rpm: entry.rpm_limit,
+      rpd: entry.rpd_limit,
+      tpm: entry.tpm_limit,
+      tpd: entry.tpd_limit,
     };
 
-    // Try all keys for this model before giving up on it
-    const rrKey = `${model.platform}:${model.model_id}`;
+    const rrKey = `${entry.platform}:${entry.model_id}`;
     let idx = roundRobinIndex.get(rrKey) ?? 0;
 
     for (let attempt = 0; attempt < keys.length; attempt++) {
       const key = keys[idx % keys.length];
       idx++;
 
-      const skipId = `${model.platform}:${model.model_id}:${key.id}`;
+      const skipId = `${entry.platform}:${entry.model_id}:${key.id}`;
       if (skipKeys?.has(skipId)) continue;
+      if (isOnCooldown(entry.platform, entry.model_id, key.id)) continue;
+      if (!canMakeRequest(entry.platform, entry.model_id, key.id, limits)) continue;
+      if (!canUseTokens(entry.platform, entry.model_id, key.id, estimatedTokens, limits)) continue;
 
-      // Check cooldown (from previous 429s)
-      if (isOnCooldown(model.platform, model.model_id, key.id)) continue;
-
-      if (!canMakeRequest(model.platform, model.model_id, key.id, limits)) continue;
-      if (!canUseTokens(model.platform, model.model_id, key.id, estimatedTokens, limits)) continue;
-
-      // We found a working key for this model!
       roundRobinIndex.set(rrKey, idx);
       const decryptedKey = decrypt(key.encrypted_key, key.iv, key.auth_tag);
 
       return {
         provider,
-        modelId: model.model_id,
-        modelDbId: model.id,
+        modelId: entry.model_id,
+        modelDbId: entry.model_db_id,
         apiKey: decryptedKey,
         keyId: key.id,
-        platform: model.platform,
-        displayName: model.display_name,
+        platform: entry.platform,
+        displayName: entry.display_name,
       };
     }
 
-    // If we reach here, this specific model has NO available keys.
-    // Update round-robin index even if we failed so we don't get stuck.
     roundRobinIndex.set(rrKey, idx);
-    
-    // We don't explicitly penalize the model here because the fact that we 
-    // couldn't find a key means we will naturally move to the next model 
-    // in the `sortedChain` for THIS specific request.
   }
 
   const err = new Error('All models exhausted. Add more API keys or wait for rate limits to reset.') as any;

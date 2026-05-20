@@ -2,7 +2,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { getDb } from '../db/index.js';
-import { getAllPenalties } from '../services/router.js';
+import { getAllPenalties, getAnalyticsScores } from '../services/router.js';
 
 export const fallbackRouter = Router();
 
@@ -27,18 +27,26 @@ fallbackRouter.get('/', (_req: Request, res: Response) => {
   `).all() as { platform: string; count: number }[];
   const keyCountMap = new Map(keyCounts.map(k => [k.platform, k.count]));
 
-  // Get current dynamic penalties
+  // Get current dynamic penalties and analytics scores
   const penalties = getAllPenalties();
   const penaltyMap = new Map(penalties.map(p => [p.modelDbId, p]));
 
+  const analyticsScores = getAnalyticsScores();
+  const analyticsMap = new Map(analyticsScores.map(s => [`${s.platform}:${s.modelId}`, s]));
+
   res.json(rows.map(r => {
     const penalty = penaltyMap.get(r.model_db_id);
+    const analytics = analyticsMap.get(`${r.platform}:${r.model_id}`);
     return {
       modelDbId: r.model_db_id,
       priority: r.priority,
       effectivePriority: r.priority + (penalty?.penalty ?? 0),
       penalty: penalty?.penalty ?? 0,
       rateLimitHits: penalty?.count ?? 0,
+      analyticsScore: analytics ? Math.round(analytics.score * 1000) / 1000 : null,
+      historicSuccessRate: analytics ? Math.round(analytics.successRate * 1000) / 10 : null,
+      historicRequests: analytics?.total ?? 0,
+      outputTokPerSec: analytics ? Math.round(analytics.tokPerSec * 10) / 10 : null,
       enabled: r.enabled === 1,
       platform: r.platform,
       modelId: r.model_id,
