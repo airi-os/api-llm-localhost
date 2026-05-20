@@ -6,7 +6,7 @@ import {
 } from 'recharts'
 import { apiFetch } from '@/lib/api'
 import { Button } from '@/components/ui/button'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { PageHeader } from '@/components/page-header'
 
 type TimeRange = '24h' | '7d' | '30d'
@@ -42,8 +42,42 @@ const axisStyle = { fontSize: 11, fill: 'var(--muted-foreground)' } as const
 const gridStyle = 'var(--border)'
 const primaryFill = 'var(--foreground)'
 
+type SortKey = 'displayName' | 'platform' | 'requests' | 'successRate' | 'avgLatencyMs' | 'totalInputTokens' | 'totalOutputTokens' | 'outputTokensPerSec'
+type SortDir = 'asc' | 'desc'
+
+function sortModels(rows: any[], key: SortKey, dir: SortDir) {
+  return [...rows].sort((a, b) => {
+    const av = a[key] ?? (typeof a[key] === 'number' ? -Infinity : '')
+    const bv = b[key] ?? (typeof b[key] === 'number' ? -Infinity : '')
+    const cmp = typeof av === 'string' ? av.localeCompare(bv) : (av as number) - (bv as number)
+    return dir === 'asc' ? cmp : -cmp
+  })
+}
+
+function SortableHead({ label, sortKey, current, dir, onSort, className }: {
+  label: string; sortKey: SortKey; current: SortKey; dir: SortDir
+  onSort: (k: SortKey) => void; className?: string
+}) {
+  const active = current === sortKey
+  return (
+    <TableHead
+      className={`sticky top-0 z-10 bg-card cursor-pointer select-none hover:text-foreground ${active ? 'text-foreground' : ''} ${className ?? ''}`}
+      onClick={() => onSort(sortKey)}
+    >
+      {label}{active ? (dir === 'asc' ? ' ↑' : ' ↓') : ''}
+    </TableHead>
+  )
+}
+
 export default function AnalyticsPage() {
   const [range, setRange] = useState<TimeRange>('7d')
+  const [sortKey, setSortKey] = useState<SortKey>('requests')
+  const [sortDir, setSortDir] = useState<SortDir>('desc')
+
+  function handleSort(key: SortKey) {
+    if (key === sortKey) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+    else { setSortKey(key); setSortDir('desc') }
+  }
 
   const { data: summary } = useQuery({
     queryKey: ['analytics', 'summary', range],
@@ -70,9 +104,9 @@ export default function AnalyticsPage() {
     queryFn: () => apiFetch<any[]>(`/api/analytics/errors?range=${range}`),
   })
 
-  const { data: errorDist } = useQuery({
-    queryKey: ['analytics', 'error-distribution', range],
-    queryFn: () => apiFetch<{ byCategory: any[]; byPlatform: any[]; detailed: any[] }>(`/api/analytics/error-distribution?range=${range}`),
+  const byPlatformWithFailures = byPlatform.map((p: any) => {
+    const failed = Math.round(p.requests * (100 - p.successRate) / 100)
+    return { ...p, successRequests: p.requests - failed, failedRequests: failed }
   })
 
   return (
@@ -109,22 +143,24 @@ export default function AnalyticsPage() {
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <Panel title="Requests by provider">
-            {byPlatform.length === 0 ? (
+            {byPlatformWithFailures.length === 0 ? (
               <p className="text-sm text-muted-foreground text-center py-8">No data yet</p>
             ) : (
               <ResponsiveContainer width="100%" height={240}>
-                <BarChart data={byPlatform} margin={{ top: 6, right: 6, left: -12, bottom: 0 }}>
+                <BarChart data={byPlatformWithFailures} margin={{ top: 6, right: 6, left: -12, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="2 4" stroke={gridStyle} />
                   <XAxis dataKey="platform" tick={axisStyle} tickLine={false} axisLine={{ stroke: gridStyle }} />
                   <YAxis tick={axisStyle} tickLine={false} axisLine={false} />
                   <Tooltip contentStyle={{ backgroundColor: 'var(--popover)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }} />
-                  <Bar dataKey="requests" fill={primaryFill} radius={[3, 3, 0, 0]} />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  <Bar dataKey="failedRequests" name="Failed" stackId="a" fill="var(--destructive)" />
+                  <Bar dataKey="successRequests" name="Success" stackId="a" fill={primaryFill} radius={[3, 3, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             )}
           </Panel>
 
-          <Panel title="Avg latency by provider">
+          <Panel title="Tok/sec by provider">
             {byPlatform.length === 0 ? (
               <p className="text-sm text-muted-foreground text-center py-8">No data yet</p>
             ) : (
@@ -132,9 +168,9 @@ export default function AnalyticsPage() {
                 <BarChart data={byPlatform} margin={{ top: 6, right: 6, left: -12, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="2 4" stroke={gridStyle} />
                   <XAxis dataKey="platform" tick={axisStyle} tickLine={false} axisLine={{ stroke: gridStyle }} />
-                  <YAxis unit="ms" tick={axisStyle} tickLine={false} axisLine={false} />
+                  <YAxis unit=" t/s" tick={axisStyle} tickLine={false} axisLine={false} />
                   <Tooltip contentStyle={{ backgroundColor: 'var(--popover)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }} />
-                  <Bar dataKey="avgLatencyMs" name="Latency (ms)" fill="var(--muted-foreground)" radius={[3, 3, 0, 0]} />
+                  <Bar dataKey="outputTokensPerSec" name="Tok/sec" fill="var(--muted-foreground)" radius={[3, 3, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             )}
@@ -165,22 +201,22 @@ export default function AnalyticsPage() {
               {byModel.length === 0 ? (
                 <p className="text-sm text-muted-foreground text-center py-8">No data yet</p>
               ) : (
-                <div className="max-h-[360px] overflow-y-auto -mx-4">
-                  <Table>
+                <div className="max-h-[360px] overflow-y-auto -mx-4 -mt-4">
+                  <table className="w-full caption-bottom text-sm">
                     <TableHeader>
                       <TableRow>
-                        <TableHead className="pl-4">Model</TableHead>
-                        <TableHead>Provider</TableHead>
-                        <TableHead className="text-right">Requests</TableHead>
-                        <TableHead className="text-right">Success</TableHead>
-                        <TableHead className="text-right">Latency</TableHead>
-                        <TableHead className="text-right">In tokens</TableHead>
-                        <TableHead className="text-right">Out tokens</TableHead>
-                        <TableHead className="text-right pr-4">tok/s</TableHead>
+                        <SortableHead label="Model" sortKey="displayName" current={sortKey} dir={sortDir} onSort={handleSort} className="pl-4" />
+                        <SortableHead label="Provider" sortKey="platform" current={sortKey} dir={sortDir} onSort={handleSort} />
+                        <SortableHead label="Requests" sortKey="requests" current={sortKey} dir={sortDir} onSort={handleSort} className="text-right" />
+                        <SortableHead label="Success" sortKey="successRate" current={sortKey} dir={sortDir} onSort={handleSort} className="text-right" />
+                        <SortableHead label="Latency" sortKey="avgLatencyMs" current={sortKey} dir={sortDir} onSort={handleSort} className="text-right" />
+                        <SortableHead label="In tokens" sortKey="totalInputTokens" current={sortKey} dir={sortDir} onSort={handleSort} className="text-right" />
+                        <SortableHead label="Out tokens" sortKey="totalOutputTokens" current={sortKey} dir={sortDir} onSort={handleSort} className="text-right" />
+                        <SortableHead label="tok/s" sortKey="outputTokensPerSec" current={sortKey} dir={sortDir} onSort={handleSort} className="text-right pr-4" />
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {byModel.map((m: any, i: number) => (
+                      {sortModels(byModel, sortKey, sortDir).map((m: any, i: number) => (
                         <TableRow key={i}>
                           <TableCell className="pl-4 text-sm font-medium">{m.displayName}</TableCell>
                           <TableCell className="text-xs text-muted-foreground">{m.platform}</TableCell>
@@ -193,39 +229,23 @@ export default function AnalyticsPage() {
                         </TableRow>
                       ))}
                     </TableBody>
-                  </Table>
+                  </table>
                 </div>
               )}
             </Panel>
           </div>
 
-          <Panel title="Errors by provider">
-            {!errorDist?.byPlatform?.length ? (
-              <p className="text-sm text-muted-foreground text-center py-8">No errors</p>
-            ) : (
-              <ResponsiveContainer width="100%" height={240}>
-                <BarChart data={errorDist.byPlatform} margin={{ top: 6, right: 6, left: -12, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="2 4" stroke={gridStyle} />
-                  <XAxis dataKey="platform" tick={axisStyle} tickLine={false} axisLine={{ stroke: gridStyle }} />
-                  <YAxis tick={axisStyle} tickLine={false} axisLine={false} />
-                  <Tooltip contentStyle={{ backgroundColor: 'var(--popover)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }} />
-                  <Bar dataKey="count" fill="var(--destructive)" radius={[3, 3, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            )}
-          </Panel>
-
           <Panel title="Recent errors">
             {errors.length === 0 ? (
               <p className="text-sm text-muted-foreground text-center py-8">No errors</p>
             ) : (
-              <div className="max-h-[240px] overflow-y-auto -mx-4">
-                <Table>
+              <div className="max-h-[240px] overflow-y-auto -mx-4 -mt-4">
+                <table className="w-full caption-bottom text-sm">
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="pl-4">Provider</TableHead>
-                      <TableHead>Message</TableHead>
-                      <TableHead className="text-right pr-4">Time</TableHead>
+                      <TableHead className="sticky top-0 z-10 bg-card pl-4">Provider</TableHead>
+                      <TableHead className="sticky top-0 z-10 bg-card">Message</TableHead>
+                      <TableHead className="sticky top-0 z-10 bg-card text-right pr-4">Time</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -239,7 +259,7 @@ export default function AnalyticsPage() {
                       </TableRow>
                     ))}
                   </TableBody>
-                </Table>
+                </table>
               </div>
             )}
           </Panel>

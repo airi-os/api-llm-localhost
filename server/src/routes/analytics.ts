@@ -104,7 +104,8 @@ analyticsRouter.get('/by-platform', (req: Request, res: Response) => {
       SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) * 100.0 / COUNT(*) as success_rate,
       AVG(latency_ms) as avg_latency_ms,
       SUM(input_tokens) as total_input_tokens,
-      SUM(output_tokens) as total_output_tokens
+      SUM(output_tokens) as total_output_tokens,
+      SUM(output_tokens) / (SUM(latency_ms) / 1000.0) as output_tokens_per_sec
     FROM requests
     WHERE created_at >= ?
     GROUP BY platform
@@ -118,6 +119,7 @@ analyticsRouter.get('/by-platform', (req: Request, res: Response) => {
     avgLatencyMs: Math.round(r.avg_latency_ms),
     totalInputTokens: r.total_input_tokens ?? 0,
     totalOutputTokens: r.total_output_tokens ?? 0,
+    outputTokensPerSec: r.output_tokens_per_sec != null ? Math.round(r.output_tokens_per_sec) : null,
   })));
 });
 
