@@ -9,12 +9,10 @@ import { PageHeader } from '@/components/page-header'
 
 interface FallbackEntry {
   modelDbId: number
-  priority: number
   enabled: boolean
   platform: string
   modelId: string
   displayName: string
-  sizeLabel: string
   keyCount: number
 }
 
