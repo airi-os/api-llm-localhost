@@ -3,7 +3,7 @@ import type {
   ChatCompletionResponse,
   ChatCompletionChunk,
 } from '@freellmapi/shared/types.js';
-import { BaseProvider, type CompletionOptions } from './base.js';
+import { BaseProvider, stripAdditionalProperties, type CompletionOptions } from './base.js';
 
 const API_BASE = 'https://api.cohere.ai/compatibility/v1';
 
@@ -23,7 +23,13 @@ export class CohereProvider extends BaseProvider {
       temperature: options?.temperature,
       max_tokens: options?.max_tokens,
       top_p: options?.top_p,
-      tools: options?.tools,
+      tools: options?.tools?.map(t => ({
+        ...t,
+        function: {
+          ...t.function,
+          ...(t.function.parameters ? { parameters: stripAdditionalProperties(t.function.parameters) } : {}),
+        },
+      })),
       tool_choice: options?.tool_choice,
     };
 
@@ -58,7 +64,13 @@ export class CohereProvider extends BaseProvider {
       temperature: options?.temperature,
       max_tokens: options?.max_tokens,
       top_p: options?.top_p,
-      tools: options?.tools,
+      tools: options?.tools?.map(t => ({
+        ...t,
+        function: {
+          ...t.function,
+          ...(t.function.parameters ? { parameters: stripAdditionalProperties(t.function.parameters) } : {}),
+        },
+      })),
       tool_choice: options?.tool_choice,
       stream: true,
     };

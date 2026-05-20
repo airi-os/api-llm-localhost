@@ -7,7 +7,7 @@ import type {
   ChatToolDefinition,
   TokenUsage,
 } from '@freellmapi/shared/types.js';
-import { BaseProvider, type CompletionOptions } from './base.js';
+import { BaseProvider, stripAdditionalProperties, type CompletionOptions } from './base.js';
 
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
@@ -74,7 +74,9 @@ function toGeminiTools(tools?: ChatToolDefinition[]): Array<{ functionDeclaratio
     functionDeclarations: tools.map(t => ({
       name: t.function.name,
       description: t.function.description,
-      parameters: t.function.parameters,
+      parameters: t.function.parameters
+        ? stripAdditionalProperties(t.function.parameters)
+        : undefined,
     })),
   }];
 }

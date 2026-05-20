@@ -17,6 +17,29 @@ export interface CompletionOptions {
   parallel_tool_calls?: boolean;
 }
 
+// Recursively removes `additionalProperties` from a JSON Schema object.
+// Cohere and Google do not support this field in tool parameter schemas.
+export function stripAdditionalProperties(schema: Record<string, unknown>): Record<string, unknown> {
+  const { additionalProperties: _, ...rest } = schema;
+
+  if (rest.properties && typeof rest.properties === 'object' && !Array.isArray(rest.properties)) {
+    rest.properties = Object.fromEntries(
+      Object.entries(rest.properties as Record<string, unknown>).map(([k, v]) => [
+        k,
+        v && typeof v === 'object' && !Array.isArray(v)
+          ? stripAdditionalProperties(v as Record<string, unknown>)
+          : v,
+      ])
+    );
+  }
+
+  if (rest.items && typeof rest.items === 'object' && !Array.isArray(rest.items)) {
+    rest.items = stripAdditionalProperties(rest.items as Record<string, unknown>);
+  }
+
+  return rest;
+}
+
 export abstract class BaseProvider {
   abstract readonly platform: Platform;
   abstract readonly name: string;

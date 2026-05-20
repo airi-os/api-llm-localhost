@@ -51,6 +51,14 @@ function getStickyModel(messages: ChatMessage[]): number | undefined {
   return entry.modelDbId;
 }
 
+function clearStickyModel(messages: ChatMessage[]) {
+  const key = getSessionKey(messages);
+  if (!key) return;
+  if (!stickySessionMap.has(key)) return;
+  stickySessionMap.delete(key);
+  console.log(`[Sticky] cleared key=${key.slice(0, 8)} | msgs=${messages.length} → non-retryable error`);
+}
+
 function setStickyModel(messages: ChatMessage[], modelDbId: number) {
   const key = getSessionKey(messages);
   if (!key) return;
@@ -348,7 +356,9 @@ function isRetryableError(err: any): boolean {
     || msg.includes('503') || msg.includes('unavailable')
     || msg.includes('500') || msg.includes('internal server error')
     // 404 from a provider means the model no longer exists/is accessible — fall back
-    || msg.includes('404') || msg.includes('no longer available') || msg.includes('model not found');
+    || msg.includes('404') || msg.includes('no longer available') || msg.includes('model not found')
+    // 400 from a provider means provider-specific incompatibility (e.g. unsupported schema fields) — fall back
+    || msg.includes('400') || msg.includes('bad request') || msg.includes('invalid json payload');
 }
 
 function extractResponseText(content: z.infer<typeof responseInputMessageSchema>['content']): string {
@@ -1082,7 +1092,9 @@ async function handleChatCompletion(
         continue;
       }
 
-      // Non-retryable error (auth, 4xx, etc.): don't retry
+      // Non-retryable error (auth, etc.): don't retry, but clear sticky so the
+      // next request in this conversation isn't pinned to the broken model.
+      clearStickyModel(messages);
       res.status(502).json({
         error: {
           message: `Provider error (${route.displayName}): ${err.message}`,
