@@ -2,3 +2,11 @@ packages:
   - shared
   - server
   - client
+allowBuilds:
+  better-sqlite3: true
+  esbuild: true
+  msw: true
+overrides:
+  "@types/react": "19.2.14"
+  electron-to-chromium: "1.5.359"
+  fast-wrap-ansi: "0.2.0"

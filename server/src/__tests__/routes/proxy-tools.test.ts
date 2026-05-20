@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import type { Express } from 'express';
 import { createApp } from '../../app.js';
-import { initDb, getDb } from '../../db/index.js';
+import { initDb, getDb, getUnifiedApiKey } from '../../db/index.js';
 
 async function request(app: Express, method: string, path: string, body?: any) {
   const server = app.listen(0);
@@ -10,7 +10,10 @@ async function request(app: Express, method: string, path: string, body?: any) {
 
   const res = await fetch(url, {
     method,
-    headers: body ? { 'Content-Type': 'application/json' } : {},
+    headers: {
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
+      ...(path.startsWith('/v1/') ? { Authorization: `Bearer ${getUnifiedApiKey()}` } : {}),
+    },
     body: body ? JSON.stringify(body) : undefined,
   });
 
@@ -321,7 +324,10 @@ describe('Proxy tool-calling support', () => {
     const addr = server.address() as any;
     const res = await fetch(`http://127.0.0.1:${addr.port}/v1/responses`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${getUnifiedApiKey()}`,
+      },
       body: JSON.stringify({
         model: 'freellmapi/auto',
         input: [{ role: 'user', content: [{ type: 'input_text', text: 'hi' }] }],
@@ -450,7 +456,10 @@ describe('Proxy tool-calling support', () => {
     const addr = server.address() as any;
     const first = await fetch(`http://127.0.0.1:${addr.port}/v1/responses`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${getUnifiedApiKey()}`,
+      },
       body: JSON.stringify({
         model: 'freellmapi/auto',
         input: [{ role: 'user', content: [{ type: 'input_text', text: 'https://youtu.be/iVFXmqElh_Q' }] }],

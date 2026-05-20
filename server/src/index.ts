@@ -1,11 +1,13 @@
 import './env.js';
 import { createApp } from './app.js';
 import { initDb } from './db/index.js';
+import { assertAdminAuthConfigured } from './middleware/adminAuth.js';
 import { startHealthChecker } from './services/health.js';
 
 const PORT = process.env.PORT ?? 3001;
 
 async function main() {
+  assertAdminAuthConfigured();
   initDb();
   const app = createApp();
 

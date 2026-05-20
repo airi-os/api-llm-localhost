@@ -12,10 +12,29 @@ import { analyticsRouter } from './routes/analytics.js';
 import { healthRouter } from './routes/health.js';
 import { settingsRouter } from './routes/settings.js';
 import { logsRouter } from './routes/logs.js';
+import { adminAuth } from './middleware/adminAuth.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MAX_LOG_BODY_CHARS = 2000;
+const DEFAULT_DEV_CORS_ORIGINS = [
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+];
+
+function parseAllowedOrigins(): string[] {
+  const raw = process.env.ADMIN_CORS_ORIGINS;
+  if (!raw) return DEFAULT_DEV_CORS_ORIGINS;
+
+  return raw
+    .split(',')
+    .map(origin => origin.trim())
+    .filter(Boolean);
+}
+
+function isSensitiveLoggingEnabled(): boolean {
+  return process.env.LOG_SENSITIVE_DATA === 'true';
+}
 
 function stringifyForLog(value: unknown): string {
   try {
@@ -45,7 +64,7 @@ export function createApp(): Express {
 
     res.on('finish', () => {
       console.log(`[HTTP] ${req.method} ${requestUrl} -> ${res.statusCode} (${Date.now() - start}ms)`);
-      if (res.statusCode >= 400 && requestUrl.startsWith('/v1/')) {
+      if (isSensitiveLoggingEnabled() && res.statusCode >= 400 && requestUrl.startsWith('/v1/')) {
         console.warn(`[HTTP] ${req.method} ${requestUrl} request body: ${stringifyForLog(req.body)}`);
         console.warn(`[HTTP] ${req.method} ${requestUrl} response body: ${stringifyForLog(responseBody)}`);
       }
@@ -53,15 +72,36 @@ export function createApp(): Express {
     next();
   });
 
-  // CSP intentionally disabled — the SPA bundles inline styles and the OG
-  // image is loaded from the same origin; enabling helmet's default CSP
-  // breaks the React build's hashed-asset loader. HSTS off because this is
-  // a single-user local proxy, served over HTTP on localhost. Both should
-  // stay disabled unless someone serves the proxy over HTTPS publicly
-  // (which is also not a supported deployment — see README).
-  app.use(helmet({ contentSecurityPolicy: false, hsts: false }));
-  app.use(cors());
+  app.use(helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", 'data:'],
+        connectSrc: ["'self'", ...parseAllowedOrigins()],
+        objectSrc: ["'none'"],
+        frameAncestors: ["'none'"],
+      },
+    },
+    strictTransportSecurity: process.env.DISABLE_HSTS === 'true' ? false : undefined,
+  }));
+  app.use(cors({
+    origin(origin, callback) {
+      if (!origin) {
+        callback(null, true);
+        return;
+      }
+      callback(null, parseAllowedOrigins().includes(origin));
+    },
+  }));
   app.use(express.json({ limit: '1mb' }));
+
+  app.get('/api/ping', (_req, res) => {
+    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  });
+
+  app.use('/api', adminAuth);
 
   // API routes
   app.use('/api/keys', keysRouter);
@@ -74,11 +114,6 @@ export function createApp(): Express {
 
   // OpenAI-compatible proxy
   app.use('/v1', proxyRouter);
-
-  // Health check
-  app.get('/api/ping', (_req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
-  });
 
   // Error handler (for API routes)
   app.use(errorHandler);

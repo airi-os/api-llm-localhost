@@ -71,6 +71,8 @@ The problem is that stacking them by hand is painful: fourteen different SDKs, f
 - **Sticky sessions** — Multi-turn conversations keep talking to the same model for 30 minutes to avoid the hallucination spike that comes from mid-conversation model switches.
 - **Encrypted key storage** — API keys are encrypted with AES-256-GCM before hitting SQLite; decryption happens in-memory just before a request.
 - **Unified API key** — Clients authenticate to your proxy with a single `freellmapi-…` bearer token. You never expose upstream provider keys to your apps.
+- **Two-key auth** — Dashboard routes (`/api/*`) require a separate `ADMIN_DASHBOARD_KEY` bearer token; proxy routes (`/v1/*`) require the unified key. The two keys cannot cross routes. `/api/ping` is the only public endpoint.
+- **Hardened production mode** — Helmet CSP/HSTS headers enabled, CORS locked to configured origins, generic 500 messages (no stack traces), sensitive request/response logging opt-in only (`LOG_SENSITIVE_DATA=true`).
 - **Health checks** — Periodic probes mark keys as `healthy`, `rate_limited`, `invalid`, or `error` so the router skips dead ones automatically.
 - **Admin dashboard** — React + Vite UI to manage keys, inspect live routing stats, browse analytics, and run prompts in a playground. Dark mode included.
 - **Analytics** — Per-request logging with latency, token counts, success rate, and per-provider breakdowns.
@@ -103,6 +105,7 @@ pnpm install
 # Generate an encryption key for at-rest key storage
 cp .env.example .env
 echo "ENCRYPTION_KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")" >> .env
+echo "ADMIN_DASHBOARD_KEY=$(node -e "console.log('freellmapi-admin-' + require('crypto').randomBytes(32).toString('hex'))")" >> .env
 
 # Start server + dashboard together
 pnpm dev
@@ -116,6 +119,19 @@ For a production build:
 pnpm build
 node server/dist/index.js     # server + dashboard both served on :3001
 ```
+
+For production, set `ADMIN_DASHBOARD_KEY` in `.env` and keep it private. The dashboard prompts for this key on first load and stores it in browser local storage to authenticate `/api/*` calls. `/v1/*` clients use the separate unified `freellmapi-…` key shown on the Keys page — the two keys cannot cross routes.
+
+**All `.env` variables:**
+
+| Variable | Required | Description |
+|---|---|---|
+| `ENCRYPTION_KEY` | Yes | 64-char hex key for AES-256-GCM at-rest key encryption. |
+| `ADMIN_DASHBOARD_KEY` | Yes (prod) | Bearer token for all `/api/*` dashboard routes. Min 24 chars. Omitting it only works in `NODE_ENV=development`. |
+| `ADMIN_CORS_ORIGINS` | No | Comma-separated browser origins allowed to call `/api/*` cross-origin (e.g. `http://localhost:5173`). Same-origin deployments don't need this. |
+| `DISABLE_HSTS` | No | Set `true` to skip HSTS headers — useful when terminating TLS at a reverse proxy. |
+| `LOG_SENSITIVE_DATA` | No | Set `true` to log full request/response bodies. Off by default; never enable in production. |
+| `PORT` | No | Server port (default `3001`). |
 
 ## Using the API
 

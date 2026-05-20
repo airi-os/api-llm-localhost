@@ -6,21 +6,9 @@ import type { ChatCompletionChunk, ChatCompletionResponse, ChatMessage, ChatTool
 import { routeRequest, recordRateLimitHit, recordSuccess, type RouteResult } from '../services/router.js';
 import { recordRequest, recordTokens, setCooldown } from '../services/ratelimit.js';
 import { getDb, getUnifiedApiKey } from '../db/index.js';
+import { extractBearerToken, timingSafeStringEqual } from '../lib/secrets.js';
 
 export const proxyRouter: Router = Router();
-
-// Constant-time string comparison for the unified API key. Plain `===` leaks
-// length and per-character timing, which a network attacker could in principle
-// use to recover the key one byte at a time.
-function timingSafeStringEqual(provided: string, expected: string): boolean {
-  const a = Buffer.from(provided);
-  const b = Buffer.from(expected);
-  // Compare against a same-length buffer regardless of input length so the
-  // comparison itself runs in constant time; the explicit length check at the
-  // end is what actually decides equality when lengths differ.
-  const compareA = a.length === b.length ? a : Buffer.alloc(b.length);
-  return crypto.timingSafeEqual(compareA, b) && a.length === b.length;
-}
 
 // Sticky sessions: track which model served each "session"
 // Key: hash of first user message → model_db_id
@@ -77,6 +65,19 @@ function setStickyModel(messages: ChatMessage[], modelDbId: number) {
 }
 
 const AUTO_MODEL_ID = 'freellmapi/auto';
+
+proxyRouter.use((req, res, next) => {
+  const token = extractBearerToken(req.headers.authorization);
+  const unifiedKey = getUnifiedApiKey();
+  if (!token || !timingSafeStringEqual(token, unifiedKey)) {
+    res.status(401).json({
+      error: { message: 'Invalid API key', type: 'authentication_error' },
+    });
+    return;
+  }
+
+  next();
+});
 
 // OpenAI-compatible /models endpoint (used by Hermes for metadata)
 proxyRouter.get('/models', (_req: Request, res: Response) => {
@@ -285,6 +286,10 @@ function stringifyModelResponseForLog(value: unknown): string {
 }
 
 function logFinalModelResponse(route: RouteResult, response: unknown): void {
+  if (process.env.LOG_SENSITIVE_DATA !== 'true') {
+    console.log(`[Model Response] ${route.platform}/${route.modelId}`);
+    return;
+  }
   console.log(`[Model Response] ${route.platform}/${route.modelId}: ${stringifyModelResponseForLog(response)}`);
 }
 
@@ -787,26 +792,6 @@ async function handleChatCompletion(
 ): Promise<void> {
   const start = Date.now();
 
-  // Authenticate with unified API key. Local requests (127.0.0.1) skip the check
-  // since they came from the same machine running the server. Non-local requests
-  // MUST present a valid Bearer token — missing or wrong → 401.
-  //
-  // Note: req.ip is the actual TCP socket peer because we never set
-  // `trust proxy`, so X-Forwarded-For cannot spoof a localhost identity.
-  // If a future change enables `trust proxy`, this localhost bypass MUST be
-  // re-evaluated.
-  const isLocal = req.ip === '127.0.0.1' || req.ip === '::1' || req.ip === '::ffff:127.0.0.1';
-  if (!isLocal) {
-    const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
-    const unifiedKey = getUnifiedApiKey();
-    if (!token || !timingSafeStringEqual(token, unifiedKey)) {
-      res.status(401).json({
-        error: { message: 'Invalid API key', type: 'authentication_error' },
-      });
-      return;
-    }
-  }
-
   // Validate request
   const parsed = chatCompletionSchema.safeParse(body);
   if (!parsed.success) {
@@ -865,10 +850,10 @@ async function handleChatCompletion(
   const estimatedTotal = estimatedInputTokens + (max_tokens ?? 1000);
 
   const lastUserMessage = [...messages].reverse().find(m => m.role === 'user');
-  const preview = typeof lastUserMessage?.content === 'string'
+  const preview = process.env.LOG_SENSITIVE_DATA === 'true' && typeof lastUserMessage?.content === 'string'
     ? lastUserMessage.content.slice(0, 120).replace(/\n/g, ' ')
     : '';
-  console.log(`[Request] ${rawModel ?? 'auto'} | ${messages.length} msg(s) | stream=${!!stream} | "${preview}"`);
+  console.log(`[Request] ${rawModel ?? 'auto'} | ${messages.length} msg(s) | stream=${!!stream}${preview ? ` | "${preview}"` : ''}`);
 
   // Explicit `model` field pins routing. If the catalog has no enabled row
   // matching the requested id, return 400 — silently auto-routing to a

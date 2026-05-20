@@ -61,6 +61,14 @@ The server serves the built client SPA as static files — in production there i
 
 **API key encryption**: Keys are stored AES-256-GCM encrypted. The `ENCRYPTION_KEY` env var (64-char hex) is the master secret; it is itself stored in the `settings` table on first boot if not provided (development convenience only — set it explicitly in production).
 
+**Two-key auth model**: Two separate bearer tokens with no overlap.
+- `ADMIN_DASHBOARD_KEY` (env var) gates all `/api/*` routes — the management dashboard (keys, models, analytics, logs, fallback config). Enforced by `middleware/adminAuth.ts` using timing-safe comparison. `/api/ping` is the only public exception.
+- Unified API key (stored in the `settings` table, shown on the Keys page) gates all `/v1/*` routes — the LLM proxy. Enforced inside `routes/proxy.ts`. Using the admin key against `/v1/*` or vice versa returns 401.
+
+**Security middleware** (`middleware/adminAuth.ts`, `lib/secrets.ts`): `adminAuth` reads `ADMIN_DASHBOARD_KEY` from env, validates minimum length (24 chars), and performs timing-safe bearer comparison. `extractBearerToken` and `timingSafeStringEqual` in `lib/secrets.ts` are shared by both auth layers. In `NODE_ENV=development/test`, admin auth is skipped when the key is absent (dev convenience only).
+
+**CORS & Helmet**: CORS is restricted to origins listed in `ADMIN_CORS_ORIGINS` (same-origin by default). Helmet CSP/HSTS headers are enabled in production; `DISABLE_HSTS=true` skips HSTS (useful behind HTTP-only reverse proxies). Production 500 errors return a generic message — stack traces never reach the client.
+
 **OpenAI Responses API compatibility** (`routes/proxy.ts`): The `/v1/responses` endpoint translates the Responses API shape (stateful sessions, `previous_response_id`) into standard chat completions internally. Session state is held in memory with a 30-minute TTL.
 
 ### Shared types
@@ -73,6 +81,15 @@ React 19 SPA with React Router v7, TanStack Query, Tailwind CSS v4, and shadcn/u
 
 ## Environment
 
-Copy `.env.example` to `.env`. Required: `ENCRYPTION_KEY` (generate with `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`). Optional: `PORT` (default 3001).
+Copy `.env.example` to `.env`.
+
+| Variable | Required | Description |
+|---|---|---|
+| `ENCRYPTION_KEY` | Yes | 64-char hex. Generate: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
+| `ADMIN_DASHBOARD_KEY` | Yes (prod) | Bearer token for `/api/*` dashboard routes. Generate: `node -e "console.log('freellmapi-admin-' + require('crypto').randomBytes(32).toString('hex'))"`. Omitting it is only safe in `NODE_ENV=development/test`. |
+| `ADMIN_CORS_ORIGINS` | No | Comma-separated browser origins allowed to call `/api/*` cross-origin. Same-origin deployments don't need this. |
+| `DISABLE_HSTS` | No | Set to `true` to skip HSTS headers (e.g. behind an HTTP-only reverse proxy in dev). |
+| `LOG_SENSITIVE_DATA` | No | Set to `true` to log full request/response bodies. Off by default — keep off in production. |
+| `PORT` | No | Server port (default 3001). |
 
 The database lives at `server/data/freeapi.db` and is auto-created on first boot.
