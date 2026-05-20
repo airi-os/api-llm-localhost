@@ -135,15 +135,27 @@ const toolCallSchema = z.object({
   thought_signature: z.string().optional(),
 });
 
+const chatContentPartSchema = z.object({
+  type: z.string().optional(),
+  text: z.string().optional(),
+});
+
+const chatContentSchema = z.union([z.string(), z.array(chatContentPartSchema)]);
+
+function flattenContent(content: string | Array<{ type?: string; text?: string }>): string {
+  if (typeof content === 'string') return content;
+  return content.map(p => p.text ?? '').join('');
+}
+
 const systemMessageSchema = z.object({
   role: z.literal('system'),
-  content: z.string(),
+  content: chatContentSchema,
   name: z.string().optional(),
 });
 
 const userMessageSchema = z.object({
   role: z.literal('user'),
-  content: z.string(),
+  content: chatContentSchema,
   name: z.string().optional(),
 });
 
@@ -845,7 +857,7 @@ async function handleChatCompletion(
 
     return {
       role: m.role,
-      content: m.content,
+      content: flattenContent(m.content),
       ...(m.name ? { name: m.name } : {}),
     };
   });
