@@ -176,7 +176,9 @@ function isRetryableError(err: any): boolean {
     || msg.includes('aborted') || msg.includes('timeout') || msg.includes('etimedout')
     || msg.includes('econnrefused') || msg.includes('econnreset')
     || msg.includes('503') || msg.includes('unavailable')
-    || msg.includes('500') || msg.includes('internal server error');
+    || msg.includes('500') || msg.includes('internal server error')
+    // 404 from a provider means the model no longer exists/is accessible — fall back
+    || msg.includes('404') || msg.includes('no longer available') || msg.includes('model not found');
 }
 
 proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
