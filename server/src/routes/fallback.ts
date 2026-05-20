@@ -2,24 +2,21 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { getDb } from '../db/index.js';
-import { getAllPenalties, getAnalyticsScores } from '../services/router.js';
+import { getAllPenalties, getAnalyticsScores, getAnalyticsScore, refreshStatsCache, PENALTY_SCORE_WEIGHT } from '../services/router.js';
 
 export const fallbackRouter = Router();
 
-// Get fallback chain (with dynamic penalties)
 fallbackRouter.get('/', (_req: Request, res: Response) => {
   const db = getDb();
+  refreshStatsCache(db, true);
   const rows = db.prepare(`
-    SELECT fc.model_db_id, fc.priority, fc.enabled,
-           m.platform, m.model_id, m.display_name, m.intelligence_rank,
-           m.speed_rank, m.size_label, m.rpm_limit, m.rpd_limit,
-           m.monthly_token_budget
+    SELECT fc.model_db_id, fc.enabled,
+           m.platform, m.model_id, m.display_name,
+           m.rpm_limit, m.rpd_limit, m.monthly_token_budget
     FROM fallback_config fc
-    JOIN models m ON m.id = fc.model_db_id
-    ORDER BY fc.priority ASC
+    JOIN models m ON m.id = fc.model_db_id AND m.enabled = 1
   `).all() as any[];
 
-  // Count enabled keys per platform
   const keyCounts = db.prepare(`
     SELECT platform, COUNT(*) as count
     FROM api_keys WHERE enabled = 1
@@ -27,48 +24,47 @@ fallbackRouter.get('/', (_req: Request, res: Response) => {
   `).all() as { platform: string; count: number }[];
   const keyCountMap = new Map(keyCounts.map(k => [k.platform, k.count]));
 
-  // Get current dynamic penalties and analytics scores
   const penalties = getAllPenalties();
   const penaltyMap = new Map(penalties.map(p => [p.modelDbId, p]));
 
   const analyticsScores = getAnalyticsScores();
   const analyticsMap = new Map(analyticsScores.map(s => [`${s.platform}:${s.modelId}`, s]));
 
-  res.json(rows.map(r => {
+  const result = rows.map(r => {
     const penalty = penaltyMap.get(r.model_db_id);
     const analytics = analyticsMap.get(`${r.platform}:${r.model_id}`);
+    const score = getAnalyticsScore(r.platform, r.model_id);
+    const penaltyVal = penalty?.penalty ?? 0;
     return {
       modelDbId: r.model_db_id,
-      priority: r.priority,
-      effectivePriority: r.priority + (penalty?.penalty ?? 0),
-      penalty: penalty?.penalty ?? 0,
+      score: Math.round(score * 1000) / 1000,
+      effectiveScore: Math.round((score - penaltyVal * PENALTY_SCORE_WEIGHT) * 1000) / 1000,
+      penalty: penaltyVal,
       rateLimitHits: penalty?.count ?? 0,
-      analyticsScore: analytics ? Math.round(analytics.score * 1000) / 1000 : null,
-      historicSuccessRate: analytics ? Math.round(analytics.successRate * 1000) / 10 : null,
-      historicRequests: analytics?.total ?? 0,
-      outputTokPerSec: analytics ? Math.round(analytics.tokPerSec * 10) / 10 : null,
+      successRate: analytics ? Math.round(analytics.successRate * 1000) / 10 : null,
+      totalRequests: analytics?.total ?? 0,
+      tokPerSec: analytics ? Math.round(analytics.tokPerSec * 10) / 10 : null,
       enabled: r.enabled === 1,
       platform: r.platform,
       modelId: r.model_id,
       displayName: r.display_name,
-      intelligenceRank: r.intelligence_rank,
-      speedRank: r.speed_rank,
-      sizeLabel: r.size_label,
       rpmLimit: r.rpm_limit,
       rpdLimit: r.rpd_limit,
       monthlyTokenBudget: r.monthly_token_budget,
       keyCount: keyCountMap.get(r.platform) ?? 0,
     };
-  }));
+  });
+
+  result.sort((a, b) => b.effectiveScore - a.effectiveScore);
+
+  res.json(result);
 });
 
 const updateSchema = z.array(z.object({
   modelDbId: z.number(),
-  priority: z.number(),
   enabled: z.boolean(),
 }));
 
-// Update fallback chain (full replace)
 fallbackRouter.put('/', (req: Request, res: Response) => {
   const parsed = updateSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -77,13 +73,10 @@ fallbackRouter.put('/', (req: Request, res: Response) => {
   }
 
   const db = getDb();
-  const update = db.prepare(`
-    UPDATE fallback_config SET priority = ?, enabled = ? WHERE model_db_id = ?
-  `);
-
+  const update = db.prepare('UPDATE fallback_config SET enabled = ? WHERE model_db_id = ?');
   const updateAll = db.transaction(() => {
     for (const entry of parsed.data) {
-      update.run(entry.priority, entry.enabled ? 1 : 0, entry.modelDbId);
+      update.run(entry.enabled ? 1 : 0, entry.modelDbId);
     }
   });
   updateAll();
@@ -91,57 +84,20 @@ fallbackRouter.put('/', (req: Request, res: Response) => {
   res.json({ success: true });
 });
 
-// Sort presets — `orderBy` is selected from a fixed whitelist, never from
-// user input directly, so the interpolation below is safe.
-const SORT_PRESETS: Record<string, string> = {
-  intelligence: 'm.intelligence_rank ASC',
-  speed: 'm.speed_rank ASC',
-  budget: "CASE m.monthly_token_budget WHEN '~120M' THEN 1 WHEN '~50-100M' THEN 2 WHEN '~30M' THEN 3 WHEN '~18-45M' THEN 4 WHEN '~18M' THEN 5 WHEN '~15M' THEN 6 WHEN '~12M' THEN 7 WHEN '~6M' THEN 8 WHEN '~5-10M' THEN 9 WHEN '~4M' THEN 10 ELSE 11 END ASC",
-};
-
-fallbackRouter.post('/sort/:preset', (req: Request, res: Response) => {
-  const preset = String(req.params.preset);
-  const orderBy = SORT_PRESETS[preset];
-  if (!orderBy) {
-    res.status(400).json({ error: { message: `Unknown preset: ${preset}. Use: intelligence, speed, budget` } });
-    return;
-  }
-
-  const db = getDb();
-  const models = db.prepare(`SELECT m.id FROM models m ORDER BY ${orderBy}`).all() as { id: number }[];
-
-  const update = db.prepare('UPDATE fallback_config SET priority = ? WHERE model_db_id = ?');
-  const reorder = db.transaction(() => {
-    for (let i = 0; i < models.length; i++) {
-      update.run(i + 1, models[i].id);
-    }
-  });
-  reorder();
-
-  res.json({ success: true, preset });
-});
-
-// Token usage per model for the stacked bar
 fallbackRouter.get('/token-usage', (_req: Request, res: Response) => {
   const db = getDb();
 
-  // Get platforms that have enabled keys
   const platforms = db.prepare(`
-    SELECT DISTINCT ak.platform
-    FROM api_keys ak
-    WHERE ak.enabled = 1
+    SELECT DISTINCT ak.platform FROM api_keys ak WHERE ak.enabled = 1
   `).all() as { platform: string }[];
   const platformSet = new Set(platforms.map(p => p.platform));
 
-  // Get monthly budget per model, ordered by fallback priority
   const models = db.prepare(`
-    SELECT m.platform, m.model_id, m.display_name, m.monthly_token_budget,
-           fc.priority
+    SELECT m.platform, m.model_id, m.display_name, m.monthly_token_budget
     FROM models m
     JOIN fallback_config fc ON fc.model_db_id = m.id
     WHERE m.enabled = 1
-    ORDER BY fc.priority ASC
-  `).all() as { platform: string; model_id: string; display_name: string; monthly_token_budget: string; priority: number }[];
+  `).all() as { platform: string; model_id: string; display_name: string; monthly_token_budget: string }[];
 
   function parseBudget(s: string): number {
     const m = s.match(/~?([\d.]+)(?:-([\d.]+))?([MK])?/);
@@ -151,7 +107,6 @@ fallbackRouter.get('/token-usage', (_req: Request, res: Response) => {
     return high * unit;
   }
 
-  // Build per-model breakdown (only platforms with keys)
   const modelBudgets = models
     .filter(m => platformSet.has(m.platform))
     .map(m => ({
@@ -162,17 +117,11 @@ fallbackRouter.get('/token-usage', (_req: Request, res: Response) => {
 
   const totalBudget = modelBudgets.reduce((s, m) => s + m.budget, 0);
 
-  // Tokens used this month
   const usage = db.prepare(`
-    SELECT
-      COALESCE(SUM(input_tokens + output_tokens), 0) as total_used
+    SELECT COALESCE(SUM(input_tokens + output_tokens), 0) as total_used
     FROM requests
     WHERE created_at >= datetime('now', 'start of month')
   `).get() as { total_used: number };
 
-  res.json({
-    totalBudget,
-    totalUsed: usage.total_used,
-    models: modelBudgets,
-  });
+  res.json({ totalBudget, totalUsed: usage.total_used, models: modelBudgets });
 });
