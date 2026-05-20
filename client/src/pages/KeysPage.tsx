@@ -24,6 +24,7 @@ const PLATFORMS: { value: Platform; label: string; keyUrl?: string }[] = [
   { value: 'kilo', label: 'Kilo Gateway (anon ok)', keyUrl: 'https://kilolabs.ai/' },
   { value: 'pollinations', label: 'Pollinations (anon ok)' },
   { value: 'llm7', label: 'LLM7 (anon ok)' },
+  { value: 'inceptionlabs', label: 'InceptionLabs', keyUrl: 'https://platform.inceptionlabs.ai/dashboard/api-keys' },
 ]
 
 const statusDot: Record<string, string> = {
