@@ -48,6 +48,7 @@ export function initDb(dbPath?: string): Database.Database {
   migrateModelsV11(db);
   migrateRequestsV12(db);
   migrateModelsV13(db);
+  migrateModelsV14(db);
   ensureUnifiedKey(db);
 
   console.log(`Database initialized at ${resolvedPath}`);
@@ -949,6 +950,69 @@ function migrateModelsV13(db: Database.Database) {
   const additions: Array<[string, string, string, number, number, string, number | null, number | null, number | null, number | null, string, number | null]> = [
     // mercury-2: flagship dLLM — tools + JSON + structured_outputs. 128K context, 50K max output.
     ['inceptionlabs', 'mercury-2', 'Mercury 2', 15, 1, 'Large', null, null, null, null, 'pay-as-you-go', 128000],
+  ];
+  const apply = db.transaction(() => {
+    for (const a of additions) insert.run(...a);
+    const missing = db.prepare(`
+      SELECT m.id FROM models m
+      LEFT JOIN fallback_config f ON m.id = f.model_db_id
+      WHERE f.id IS NULL ORDER BY m.intelligence_rank ASC
+    `).all() as { id: number }[];
+    if (missing.length > 0) {
+      const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
+      const addFb = db.prepare('INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, ?, 1)');
+      for (let i = 0; i < missing.length; i++) addFb.run(missing[i].id, maxPriority + i + 1);
+    }
+  });
+  apply();
+}
+
+/**
+ * V14 (May 2026): OpenRouter :free catalog delta.
+ *
+ * Removals — confirmed dead (not present in /api/v1/models):
+ *   - inclusionai/ling-2.6-1t:free
+ *   - tencent/hy3-preview:free
+ *
+ * Additions — probe-verified live in /api/v1/models:
+ *   - deepseek/deepseek-v4-flash:free (1M ctx, Frontier)
+ *   - arcee-ai/trinity-large-thinking:free (replaces deleted preview variant)
+ *   - baidu/cobuddy:free ("Baidu Qianfan: CoBuddy")
+ *   - cognitivecomputations/dolphin-mistral-24b-venice-edition:free ("Venice: Uncensored")
+ *   - meta-llama/llama-3.2-3b-instruct:free (tiny 3B, useful fast/cheap slot)
+ *   - nvidia/nemotron-nano-12b-v2-vl:free (vision model, 128K ctx)
+ */
+function migrateModelsV14(db: Database.Database) {
+  const deleteModel = db.prepare(`DELETE FROM models WHERE platform = ? AND model_id = ?`);
+  const deleteFallback = db.prepare(`
+    DELETE FROM fallback_config WHERE model_db_id IN (
+      SELECT id FROM models WHERE platform = ? AND model_id = ?
+    )
+  `);
+  const removals: Array<[string, string]> = [
+    ['openrouter', 'inclusionai/ling-2.6-1t:free'],
+    ['openrouter', 'tencent/hy3-preview:free'],
+  ];
+  const applyRemovals = db.transaction(() => {
+    for (const [p, m] of removals) {
+      deleteFallback.run(p, m);
+      deleteModel.run(p, m);
+    }
+  });
+  applyRemovals();
+
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, size_label, rpm_limit, rpd_limit, tpm_limit, tpd_limit, monthly_token_budget, context_window)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const additions: Array<[string, string, string, number, number, string, number | null, number | null, number | null, number | null, string, number | null]> = [
+    // OpenRouter :free quotas: 20 RPM / 200 RPD convention matches existing rows.
+    ['openrouter', 'deepseek/deepseek-v4-flash:free',                             'DeepSeek V4 Flash (free)',              4,  10, 'Frontier', 20, 200, null, null, '~6M', 1048576],
+    ['openrouter', 'arcee-ai/trinity-large-thinking:free',                        'Trinity Large Thinking (free)',         10,  9, 'Frontier', 20, 200, null, null, '~6M', 262144],
+    ['openrouter', 'baidu/cobuddy:free',                                          'CoBuddy (free)',                        20,  9, 'Large',    20, 200, null, null, '~6M', 131072],
+    ['openrouter', 'cognitivecomputations/dolphin-mistral-24b-venice-edition:free','Venice Uncensored (free)',              18,  9, 'Large',    20, 200, null, null, '~6M', 32768],
+    ['openrouter', 'meta-llama/llama-3.2-3b-instruct:free',                       'Llama 3.2 3B (free)',                   32, 10, 'Small',    20, 200, null, null, '~6M', 131072],
+    ['openrouter', 'nvidia/nemotron-nano-12b-v2-vl:free',                         'Nemotron Nano 12B VL (free)',           26, 10, 'Medium',   20, 200, null, null, '~6M', 128000],
   ];
   const apply = db.transaction(() => {
     for (const a of additions) insert.run(...a);
