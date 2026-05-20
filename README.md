@@ -10,7 +10,7 @@ Aggregate the free tiers from Google, Groq, Cerebras, SambaNova, NVIDIA, Mistral
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
 
-![Fallback chain with per-provider token budget](repo-assets/fallback-chain.png)
+![Live routing stats — score-ranked model table](repo-assets/fallback-chain.png)
 
 </div>
 
@@ -65,13 +65,14 @@ The problem is that stacking them by hand is painful: fourteen different SDKs, f
 - **OpenAI-compatible** — `POST /v1/chat/completions` and `GET /v1/models` work with the official OpenAI SDKs and any OpenAI-compatible client (LangChain, LlamaIndex, Continue, Hermes, etc.). Just change `base_url`.
 - **Streaming and non-streaming** — Server-Sent Events for `stream: true`, JSON response otherwise. Every provider adapter implements both.
 - **Tool calling** — OpenAI-style `tools` / `tool_choice` requests are passed through, and assistant `tool_calls` + `tool` role follow-up messages round-trip across providers.
+- **Thompson-sampling router** — Each request draws a score from each model's Beta posterior (`Beta(successes + 2, failures + 2)`), adds a normalized tok/s speed term, and subtracts any active rate-limit penalty. The stochastic draw means better models win more often without locking out unproven ones — exploration is automatic and proportional to uncertainty. The dashboard shows the deterministic Bayesian mean of the same posterior for human readability.
 - **Automatic fallover** — If the chosen provider returns a 429, 5xx, or times out, the router skips it, puts the key on a short cooldown, and retries on the next model in your fallback chain (up to 20 attempts).
 - **Per-key rate tracking** — RPM, RPD, TPM, and TPD counters per `(platform, model, key)` so the router always picks a key that's under its caps.
 - **Sticky sessions** — Multi-turn conversations keep talking to the same model for 30 minutes to avoid the hallucination spike that comes from mid-conversation model switches.
 - **Encrypted key storage** — API keys are encrypted with AES-256-GCM before hitting SQLite; decryption happens in-memory just before a request.
 - **Unified API key** — Clients authenticate to your proxy with a single `freellmapi-…` bearer token. You never expose upstream provider keys to your apps.
 - **Health checks** — Periodic probes mark keys as `healthy`, `rate_limited`, `invalid`, or `error` so the router skips dead ones automatically.
-- **Admin dashboard** — React + Vite UI to manage keys, reorder the fallback chain, inspect analytics, and run prompts in a playground. Dark mode included.
+- **Admin dashboard** — React + Vite UI to manage keys, inspect live routing stats, browse analytics, and run prompts in a playground. Dark mode included.
 - **Analytics** — Per-request logging with latency, token counts, success rate, and per-provider breakdowns.
 - **Deploys to a Raspberry Pi** — Runs happily on a Pi 4 under PM2 behind nginx. ~40 MB RSS at idle.
 
@@ -92,27 +93,27 @@ PRs that add any of these are very welcome. See [Contributing](#contributing).
 
 ## Quick start
 
-**Prerequisites:** Node.js 20+, npm.
+**Prerequisites:** Node.js 22, [pnpm](https://pnpm.io) (or use [Volta](https://volta.sh) — versions are pinned in `package.json`).
 
 ```bash
 git clone https://github.com/tashfeenahmed/freellmapi.git
 cd freellmapi
-npm install
+pnpm install
 
 # Generate an encryption key for at-rest key storage
 cp .env.example .env
 echo "ENCRYPTION_KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")" >> .env
 
 # Start server + dashboard together
-npm run dev
+pnpm dev
 ```
 
-Open http://localhost:5173 (the Vite dev UI), add your provider keys on the **Keys** page, reorder the **Fallback Chain** to taste, and grab your unified API key from the **Keys** page header. That unified key is what you point your OpenAI SDK at.
+Open http://localhost:5173 (the Vite dev UI), add your provider keys on the **Keys** page, and grab your unified API key from the **Keys** page header. That unified key is what you point your OpenAI SDK at.
 
 For a production build:
 
 ```bash
-npm run build
+pnpm build
 node server/dist/index.js     # server + dashboard both served on :3001
 ```
 
@@ -235,21 +236,25 @@ Request volume, success rate, tokens in and out, average latency, and per-provid
 │  OpenAI client   │      streamed tokens    └────────────┬────────────┘
 └──────────────────┘                                      │
                                                           ▼
-                             ┌────────────────────────────────────────────────┐
-                             │  Router                                        │
-                             │   1. Pick highest-priority model that          │
-                             │      (a) has a healthy key and                 │
-                             │      (b) is under all its rate limits.         │
-                             │   2. Decrypt key, call provider SDK.           │
-                             │   3. On 429/5xx → cooldown + retry next model. │
-                             └────────────────────────────────────────────────┘
+                             ┌──────────────────────────────────────────────────────┐
+                             │  Router (Thompson-sampling bandit)                   │
+                             │   1. For each enabled model, sample a score:         │
+                             │        score = Beta(wins+2, losses+2) sample         │
+                             │              + SPEED_WEIGHT × (tok/s / max tok/s)    │
+                             │              − slow-model penalty (if < 10 tok/s)    │
+                             │              − rate-limit penalty × 0.05             │
+                             │   2. Sort descending; sticky session pins preferred. │
+                             │   3. First model with a healthy, under-limit key     │
+                             │      wins; decrypt key, call provider SDK.           │
+                             │   4. On 429/5xx → cooldown + retry next model.      │
+                             └──────────────────────────────────────────────────────┘
                                           │
    ┌──────────────┬────────────┬──────────┴─────────┬─────────────┬──────────┐
    ▼              ▼            ▼                    ▼             ▼          ▼
  Google         Groq        Cerebras           OpenRouter        HF       …10 more
 ```
 
-- **Router** (`server/src/services/router.ts`) — picks a model per request.
+- **Router** (`server/src/services/router.ts`) — Thompson-sampling multi-armed bandit. Samples from each model's Beta posterior over success rate, adds a normalized tok/s speed reward (models below 10 tok/s receive an active penalty), and subtracts a time-decaying rate-limit penalty for recent 429s. Stochastic selection means the router naturally explores new models while converging on faster, more reliable ones as data accumulates.
 - **Rate-limit ledger** (`server/src/services/ratelimit.ts`) — in-memory RPM/RPD/TPM/TPD counters backed by SQLite, with cooldowns on 429s.
 - **Provider adapters** (`server/src/providers/*.ts`) — one file per provider, implementing the `Provider` base class: `chatCompletion()` and `streamChatCompletion()`.
 - **Health service** (`server/src/services/health.ts`) — periodic probe keeps key status fresh.
@@ -280,9 +285,9 @@ Contributors very welcome! Good first PRs:
 **Development loop:**
 
 ```bash
-npm install
-npm run dev      # server on :3001, dashboard on :5173, both with HMR
-npm test         # vitest — 75 tests across providers, routes, router, ratelimit
+pnpm install
+pnpm dev         # server on :3001, dashboard on :5173, both with HMR
+pnpm test        # vitest — 75 tests across providers, routes, router, ratelimit
 ```
 
 PRs should include a test, keep the existing test suite green, and match the `.editorconfig` / tsconfig defaults already in the repo. Issues and discussions are open.
