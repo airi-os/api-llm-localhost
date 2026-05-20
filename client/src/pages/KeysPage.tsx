@@ -8,20 +8,20 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { PageHeader } from '@/components/page-header'
 import type { ApiKey, Platform } from '../../../shared/types'
 
-const PLATFORMS: { value: Platform; label: string }[] = [
-  { value: 'google', label: 'Google AI Studio' },
-  { value: 'groq', label: 'Groq' },
-  { value: 'cerebras', label: 'Cerebras' },
-  { value: 'sambanova', label: 'SambaNova' },
-  { value: 'nvidia', label: 'NVIDIA NIM' },
-  { value: 'mistral', label: 'Mistral' },
-  { value: 'openrouter', label: 'OpenRouter' },
-  { value: 'github', label: 'GitHub Models' },
-  { value: 'cohere', label: 'Cohere' },
-  { value: 'cloudflare', label: 'Cloudflare Workers AI' },
-  { value: 'zhipu', label: 'Zhipu AI (Z.ai)' },
-  { value: 'ollama', label: 'Ollama Cloud' },
-  { value: 'kilo', label: 'Kilo Gateway (anon ok)' },
+const PLATFORMS: { value: Platform; label: string; keyUrl?: string }[] = [
+  { value: 'google', label: 'Google AI Studio', keyUrl: 'https://aistudio.google.com/app/apikey' },
+  { value: 'groq', label: 'Groq', keyUrl: 'https://console.groq.com/keys' },
+  { value: 'cerebras', label: 'Cerebras', keyUrl: 'https://cloud.cerebras.ai/platform' },
+  { value: 'sambanova', label: 'SambaNova', keyUrl: 'https://cloud.sambanova.ai/apis' },
+  { value: 'nvidia', label: 'NVIDIA NIM', keyUrl: 'https://build.nvidia.com/' },
+  { value: 'mistral', label: 'Mistral', keyUrl: 'https://console.mistral.ai/api-keys/' },
+  { value: 'openrouter', label: 'OpenRouter', keyUrl: 'https://openrouter.ai/settings/keys' },
+  { value: 'github', label: 'GitHub Models', keyUrl: 'https://github.com/settings/tokens' },
+  { value: 'cohere', label: 'Cohere', keyUrl: 'https://dashboard.cohere.com/api-keys' },
+  { value: 'cloudflare', label: 'Cloudflare Workers AI', keyUrl: 'https://dash.cloudflare.com/profile/api-tokens' },
+  { value: 'zhipu', label: 'Zhipu AI (Z.ai)', keyUrl: 'https://open.bigmodel.cn/usercenter/apikeys' },
+  { value: 'ollama', label: 'Ollama Cloud', keyUrl: 'https://ollama.com/settings/api-keys' },
+  { value: 'kilo', label: 'Kilo Gateway (anon ok)', keyUrl: 'https://kilolabs.ai/' },
   { value: 'pollinations', label: 'Pollinations (anon ok)' },
   { value: 'llm7', label: 'LLM7 (anon ok)' },
 ]
@@ -182,6 +182,7 @@ export default function KeysPage() {
   })
 
   const needsAccountId = platform === 'cloudflare'
+  const selectedPlatformKeyUrl = PLATFORMS.find(p => p.value === platform)?.keyUrl
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -244,7 +245,15 @@ export default function KeysPage() {
               </div>
             )}
             <div className="space-y-1.5 flex-1 min-w-[240px]">
-              <Label className="text-xs">{needsAccountId ? 'API token' : 'API key'}</Label>
+              <Label className="text-xs">
+                {selectedPlatformKeyUrl ? (
+                  <a href={selectedPlatformKeyUrl} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2 decoration-muted-foreground/50 hover:decoration-foreground transition-colors">
+                    {needsAccountId ? 'API token' : 'API key'}
+                  </a>
+                ) : (
+                  needsAccountId ? 'API token' : 'API key'
+                )}
+              </Label>
               <Input
                 type="password"
                 value={apiKey}
