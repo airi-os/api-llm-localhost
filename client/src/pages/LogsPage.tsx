@@ -30,9 +30,12 @@ function formatTimestamp(iso: string): string {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
 }
 
+const FOLLOW_THRESHOLD_PX = 60
+
 export default function LogsPage() {
   const containerRef = useRef<HTMLDivElement>(null)
   const [v1Only, setV1Only] = useState(true)
+  const [isFollowing, setIsFollowing] = useState(true)
 
   const { data: logs = [], dataUpdatedAt } = useQuery({
     queryKey: ['logs'],
@@ -44,11 +47,22 @@ export default function LogsPage() {
     ? logs.filter(e => e.message.includes('/v1/') || e.message.startsWith('[Model Response]') || e.message.startsWith('[Proxy]') || e.message.startsWith('[Request]'))
     : logs
 
+  function handleScroll() {
+    const el = containerRef.current
+    if (!el) return
+    setIsFollowing(el.scrollTop <= FOLLOW_THRESHOLD_PX)
+  }
+
+  function scrollToTop() {
+    containerRef.current?.scrollTo({ top: 0, behavior: 'smooth' })
+    setIsFollowing(true)
+  }
+
   useEffect(() => {
-    if (containerRef.current) {
-      containerRef.current.scrollTop = 0
+    if (isFollowing) {
+      containerRef.current?.scrollTo({ top: 0 })
     }
-  }, [dataUpdatedAt])
+  }, [dataUpdatedAt, isFollowing])
 
   return (
     <div className="flex flex-col h-[calc(100vh-10rem)]">
@@ -75,9 +89,20 @@ export default function LogsPage() {
         }
       />
 
+      <div className="relative flex-1 min-h-0">
+        {!isFollowing && (
+          <button
+            onClick={scrollToTop}
+            className="absolute top-2 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 rounded-full border bg-card px-3 py-1 text-xs font-medium shadow-sm hover:bg-muted transition-colors"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m18 15-6-6-6 6"/></svg>
+            Back to live
+          </button>
+        )}
       <div
         ref={containerRef}
-        className="flex-1 overflow-y-auto rounded-lg border bg-card font-mono text-xs"
+        onScroll={handleScroll}
+        className="h-full overflow-y-auto rounded-lg border bg-card font-mono text-xs"
       >
         {visibleLogs.length === 0 ? (
           <p className="text-muted-foreground p-4">{logs.length === 0 ? 'No logs yet.' : 'No /v1 traffic yet.'}</p>
@@ -103,6 +128,7 @@ export default function LogsPage() {
             </tbody>
           </table>
         )}
+      </div>
       </div>
     </div>
   )
