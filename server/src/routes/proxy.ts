@@ -100,6 +100,22 @@ proxyRouter.get('/models', (_req: Request, res: Response) => {
   });
 });
 
+// OpenAI-compatible GET /models/:id endpoint
+proxyRouter.get('/models/:id(*)', (req: Request, res: Response) => {
+  const id = req.params.id;
+  if (id === AUTO_MODEL_ID) {
+    res.json({ id: AUTO_MODEL_ID, object: 'model', created: 0, owned_by: 'freellmapi' });
+    return;
+  }
+  const db = getDb();
+  const model = db.prepare('SELECT platform, model_id, display_name, context_window FROM models WHERE model_id = ? AND enabled = 1').get(id) as any;
+  if (!model) {
+    res.status(404).json({ error: { message: `Model '${id}' not found`, type: 'invalid_request_error' } });
+    return;
+  }
+  res.json({ id: model.model_id, object: 'model', created: 0, owned_by: model.platform, name: model.display_name, context_window: model.context_window });
+});
+
 const MAX_RETRIES = 20;
 
 const toolCallSchema = z.object({
