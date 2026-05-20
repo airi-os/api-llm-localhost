@@ -173,4 +173,379 @@ describe('Proxy tool-calling support', () => {
     expect(providerBody.messages[2].tool_call_id).toBe('call_weather_1');
     expect(body.choices[0].message.content).toContain('30C');
   });
+
+  it('accepts Responses API text input and returns response output_text', async () => {
+    const origFetch = global.fetch;
+    let providerBody: any = null;
+
+    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      if (urlStr.includes('api.groq.com/openai/v1/chat/completions')) {
+        providerBody = JSON.parse((init as any).body);
+        return {
+          ok: true,
+          json: () => Promise.resolve({
+            id: 'chatcmpl-response',
+            object: 'chat.completion',
+            created: 123,
+            model: 'openai/gpt-oss-120b',
+            choices: [{
+              index: 0,
+              message: {
+                role: 'assistant',
+                content: 'pong',
+              },
+              finish_reason: 'stop',
+            }],
+            usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 },
+          }),
+        } as any;
+      }
+      return origFetch(url, init);
+    });
+
+    const { status, body } = await request(app, 'POST', '/v1/responses', {
+      model: 'freellmapi/auto',
+      instructions: 'Answer briefly.',
+      input: 'ping',
+      max_output_tokens: 12,
+    });
+
+    expect(status).toBe(200);
+    expect(providerBody.messages).toEqual([
+      { role: 'system', content: 'Answer briefly.' },
+      { role: 'user', content: 'ping' },
+    ]);
+    expect(providerBody.max_tokens).toBe(12);
+    expect(body.object).toBe('response');
+    expect(body.status).toBe('completed');
+    expect(body.output_text).toBe('pong');
+    expect(body.output[0].content[0].text).toBe('pong');
+    expect(body.usage.input_tokens).toBe(5);
+    expect(body.usage.output_tokens).toBe(2);
+  });
+
+  it('carries Responses API context via previous_response_id', async () => {
+    const origFetch = global.fetch;
+    const providerBodies: any[] = [];
+
+    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      if (urlStr.includes('api.groq.com/openai/v1/chat/completions')) {
+        providerBodies.push(JSON.parse((init as any).body));
+        const answer = providerBodies.length === 1 ? 'first answer' : 'second answer';
+        return {
+          ok: true,
+          json: () => Promise.resolve({
+            id: `chatcmpl-response-${providerBodies.length}`,
+            object: 'chat.completion',
+            created: 123,
+            model: 'openai/gpt-oss-120b',
+            choices: [{
+              index: 0,
+              message: {
+                role: 'assistant',
+                content: answer,
+              },
+              finish_reason: 'stop',
+            }],
+            usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 },
+          }),
+        } as any;
+      }
+      return origFetch(url, init);
+    });
+
+    const first = await request(app, 'POST', '/v1/responses', {
+      model: 'freellmapi/auto',
+      input: 'remember alpha',
+    });
+    expect(first.status).toBe(200);
+
+    const second = await request(app, 'POST', '/v1/responses', {
+      model: 'freellmapi/auto',
+      previous_response_id: first.body.id,
+      input: 'what did I ask you to remember?',
+    });
+
+    expect(second.status).toBe(200);
+    expect(providerBodies[1].messages).toEqual([
+      { role: 'user', content: 'remember alpha' },
+      { role: 'assistant', content: 'first answer' },
+      { role: 'user', content: 'what did I ask you to remember?' },
+    ]);
+    expect(second.body.output_text).toBe('second answer');
+  });
+
+  it('streams Responses API text deltas with flat function tools', async () => {
+    const origFetch = global.fetch;
+    let providerBody: any = null;
+
+    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      if (urlStr.includes('api.groq.com/openai/v1/chat/completions')) {
+        providerBody = JSON.parse((init as any).body);
+        const chunks = [
+          {
+            id: 'chunk-1',
+            object: 'chat.completion.chunk',
+            created: 123,
+            model: 'openai/gpt-oss-120b',
+            choices: [{ index: 0, delta: { role: 'assistant', content: 'hel' }, finish_reason: null }],
+          },
+          {
+            id: 'chunk-2',
+            object: 'chat.completion.chunk',
+            created: 123,
+            model: 'openai/gpt-oss-120b',
+            choices: [{ index: 0, delta: { content: 'lo' }, finish_reason: 'stop' }],
+          },
+        ];
+        const encoder = new TextEncoder();
+        return {
+          ok: true,
+          body: new ReadableStream({
+            start(controller) {
+              for (const value of chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).concat('data: [DONE]\n\n')) {
+                controller.enqueue(encoder.encode(value));
+              }
+              controller.close();
+            },
+          }),
+        } as any;
+      }
+      return origFetch(url, init);
+    });
+
+    const server = app.listen(0);
+    const addr = server.address() as any;
+    const res = await fetch(`http://127.0.0.1:${addr.port}/v1/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'freellmapi/auto',
+        input: [{ role: 'user', content: [{ type: 'input_text', text: 'hi' }] }],
+        stream: true,
+        tools: [{
+          type: 'function',
+          name: 'transcribe',
+          description: 'Transcribe a YouTube video using its URL.',
+          parameters: {
+            type: 'object',
+            properties: { youtube_video_url: { type: 'string' } },
+            required: ['youtube_video_url'],
+          },
+        }],
+        tool_choice: 'auto',
+      }),
+    });
+    const text = await res.text();
+    server.close();
+
+    expect(res.status).toBe(200);
+    expect(providerBody.stream).toBe(true);
+    expect(providerBody.tools[0]).toEqual({
+      type: 'function',
+      function: {
+        name: 'transcribe',
+        description: 'Transcribe a YouTube video using its URL.',
+        parameters: {
+          type: 'object',
+          properties: { youtube_video_url: { type: 'string' } },
+          required: ['youtube_video_url'],
+        },
+      },
+    });
+    expect(text).toContain('event: response.output_text.delta');
+    expect(text).toContain('"delta":"hel"');
+    expect(text).toContain('"output_text":"hello"');
+    expect(text).toContain('event: response.completed');
+  });
+
+  it('streams Responses API function calls and accepts function outputs', async () => {
+    const origFetch = global.fetch;
+    const providerBodies: any[] = [];
+
+    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      if (urlStr.includes('api.groq.com/openai/v1/chat/completions')) {
+        providerBodies.push(JSON.parse((init as any).body));
+
+        if (providerBodies.length === 1) {
+          const chunks = [
+            {
+              id: 'chunk-tool-1',
+              object: 'chat.completion.chunk',
+              created: 123,
+              model: 'openai/gpt-oss-120b',
+              choices: [{
+                index: 0,
+                delta: {
+                  role: 'assistant',
+                  tool_calls: [{
+                    index: 0,
+                    id: 'call_transcribe',
+                    type: 'function',
+                    function: { name: 'transcribe', arguments: '{"youtube_video_url":"' },
+                  }],
+                },
+                finish_reason: null,
+              }],
+            },
+            {
+              id: 'chunk-tool-2',
+              object: 'chat.completion.chunk',
+              created: 123,
+              model: 'openai/gpt-oss-120b',
+              choices: [{
+                index: 0,
+                delta: {
+                  tool_calls: [{
+                    index: 0,
+                    type: 'function',
+                    function: { arguments: 'https://youtu.be/iVFXmqElh_Q"}' },
+                  }],
+                },
+                finish_reason: 'tool_calls',
+              }],
+            },
+          ];
+          const encoder = new TextEncoder();
+          return {
+            ok: true,
+            body: new ReadableStream({
+              start(controller) {
+                for (const value of chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).concat('data: [DONE]\n\n')) {
+                  controller.enqueue(encoder.encode(value));
+                }
+                controller.close();
+              },
+            }),
+          } as any;
+        }
+
+        return {
+          ok: true,
+          json: () => Promise.resolve({
+            id: 'chatcmpl-after-tool',
+            object: 'chat.completion',
+            created: 123,
+            model: 'openai/gpt-oss-120b',
+            choices: [{
+              index: 0,
+              message: {
+                role: 'assistant',
+                content: 'Video summary.',
+              },
+              finish_reason: 'stop',
+            }],
+            usage: { prompt_tokens: 30, completion_tokens: 4, total_tokens: 34 },
+          }),
+        } as any;
+      }
+      return origFetch(url, init);
+    });
+
+    const server = app.listen(0);
+    const addr = server.address() as any;
+    const first = await fetch(`http://127.0.0.1:${addr.port}/v1/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'freellmapi/auto',
+        input: [{ role: 'user', content: [{ type: 'input_text', text: 'https://youtu.be/iVFXmqElh_Q' }] }],
+        stream: true,
+        tools: [{
+          type: 'function',
+          name: 'transcribe',
+          parameters: {
+            type: 'object',
+            properties: { youtube_video_url: { type: 'string' } },
+            required: ['youtube_video_url'],
+          },
+        }],
+        tool_choice: 'auto',
+      }),
+    });
+    const firstText = await first.text();
+    const responseId = firstText.match(/"id":"(resp_[^"]+)"/)?.[1];
+    server.close();
+
+    expect(first.status).toBe(200);
+    expect(firstText).toContain('event: response.function_call_arguments.delta');
+    expect(firstText).toContain('event: response.function_call_arguments.done');
+    expect(firstText).toContain('event: response.output_item.done');
+    expect(firstText).toContain('"type":"function_call"');
+    expect(firstText).toContain('"output_index":0');
+    expect(firstText).toContain('"call_id":"call_transcribe"');
+    expect(firstText).toContain('https://youtu.be/iVFXmqElh_Q');
+    expect(firstText).not.toContain('"type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":""');
+    expect(responseId).toBeDefined();
+
+    const second = await request(app, 'POST', '/v1/responses', {
+      model: 'freellmapi/auto',
+      previous_response_id: responseId,
+      input: [{
+        type: 'function_call_output',
+        call_id: 'call_transcribe',
+        output: 'Transcript text.',
+      }],
+    });
+
+    expect(second.status).toBe(200);
+    expect(providerBodies[1].messages.at(-2)).toEqual({
+      role: 'assistant',
+      content: null,
+      tool_calls: [{
+        id: 'call_transcribe',
+        type: 'function',
+        function: {
+          name: 'transcribe',
+          arguments: '{"youtube_video_url":"https://youtu.be/iVFXmqElh_Q"}',
+        },
+      }],
+    });
+    expect(providerBodies[1].messages.at(-1)).toEqual({
+      role: 'tool',
+      tool_call_id: 'call_transcribe',
+      content: 'Transcript text.',
+    });
+
+    const replayed = await request(app, 'POST', '/v1/responses', {
+      model: 'freellmapi/auto',
+      input: [
+        { role: 'user', content: [{ type: 'input_text', text: 'https://youtu.be/iVFXmqElh_Q' }] },
+        {
+          type: 'function_call',
+          call_id: 'call_transcribe_replay',
+          name: 'transcribe',
+          arguments: '{"youtube_video_url":"https://youtu.be/iVFXmqElh_Q"}',
+        },
+        {
+          type: 'function_call_output',
+          call_id: 'call_transcribe_replay',
+          output: 'Transcript text.',
+        },
+      ],
+    });
+
+    expect(replayed.status).toBe(200);
+    expect(providerBodies[2].messages.at(-2)).toEqual({
+      role: 'assistant',
+      content: null,
+      tool_calls: [{
+        id: 'call_transcribe_replay',
+        type: 'function',
+        function: {
+          name: 'transcribe',
+          arguments: '{"youtube_video_url":"https://youtu.be/iVFXmqElh_Q"}',
+        },
+      }],
+    });
+    expect(providerBodies[2].messages.at(-1)).toEqual({
+      role: 'tool',
+      tool_call_id: 'call_transcribe_replay',
+      content: 'Transcript text.',
+    });
+  });
 });

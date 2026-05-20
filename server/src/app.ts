@@ -13,9 +13,43 @@ import { settingsRouter } from './routes/settings.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const MAX_LOG_BODY_CHARS = 2000;
+
+function stringifyForLog(value: unknown): string {
+  try {
+    const serialized = JSON.stringify(value);
+    if (!serialized) return '';
+    return serialized.length > MAX_LOG_BODY_CHARS
+      ? `${serialized.slice(0, MAX_LOG_BODY_CHARS)}...`
+      : serialized;
+  } catch {
+    return '[unserializable body]';
+  }
+}
 
 export function createApp(): Express {
   const app = express();
+
+  app.use((req, res, next) => {
+    const start = Date.now();
+    const requestUrl = req.originalUrl;
+    let responseBody: unknown;
+    const originalJson = res.json.bind(res);
+
+    res.json = (body: unknown) => {
+      responseBody = body;
+      return originalJson(body);
+    };
+
+    res.on('finish', () => {
+      console.log(`[HTTP] ${req.method} ${requestUrl} -> ${res.statusCode} (${Date.now() - start}ms)`);
+      if (res.statusCode >= 400 && requestUrl.startsWith('/v1/')) {
+        console.warn(`[HTTP] ${req.method} ${requestUrl} request body: ${stringifyForLog(req.body)}`);
+        console.warn(`[HTTP] ${req.method} ${requestUrl} response body: ${stringifyForLog(responseBody)}`);
+      }
+    });
+    next();
+  });
 
   // CSP intentionally disabled — the SPA bundles inline styles and the OG
   // image is loaded from the same origin; enabling helmet's default CSP
