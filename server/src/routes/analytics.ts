@@ -69,7 +69,8 @@ analyticsRouter.get('/by-model', (req: Request, res: Response) => {
       SUM(CASE WHEN r.status = 'success' THEN 1 ELSE 0 END) * 100.0 / COUNT(*) as success_rate,
       AVG(r.latency_ms) as avg_latency_ms,
       SUM(r.input_tokens) as total_input_tokens,
-      SUM(r.output_tokens) as total_output_tokens
+      SUM(r.output_tokens) as total_output_tokens,
+      SUM(r.output_tokens) / (SUM(r.latency_ms) / 1000.0) as output_tokens_per_sec
     FROM requests r
     LEFT JOIN models m ON m.platform = r.platform AND m.model_id = r.model_id
     WHERE r.created_at >= ?
@@ -86,6 +87,7 @@ analyticsRouter.get('/by-model', (req: Request, res: Response) => {
     avgLatencyMs: Math.round(r.avg_latency_ms),
     totalInputTokens: r.total_input_tokens ?? 0,
     totalOutputTokens: r.total_output_tokens ?? 0,
+    outputTokensPerSec: r.output_tokens_per_sec != null ? Math.round(r.output_tokens_per_sec) : null,
   })));
 });
 

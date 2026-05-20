@@ -175,7 +175,8 @@ export default function AnalyticsPage() {
                         <TableHead className="text-right">Success</TableHead>
                         <TableHead className="text-right">Latency</TableHead>
                         <TableHead className="text-right">In tokens</TableHead>
-                        <TableHead className="text-right pr-4">Out tokens</TableHead>
+                        <TableHead className="text-right">Out tokens</TableHead>
+                        <TableHead className="text-right pr-4">tok/s</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -187,7 +188,8 @@ export default function AnalyticsPage() {
                           <TableCell className="text-right tabular-nums">{m.successRate}%</TableCell>
                           <TableCell className="text-right tabular-nums">{m.avgLatencyMs} ms</TableCell>
                           <TableCell className="text-right tabular-nums">{formatTokens(m.totalInputTokens)}</TableCell>
-                          <TableCell className="text-right tabular-nums pr-4">{formatTokens(m.totalOutputTokens)}</TableCell>
+                          <TableCell className="text-right tabular-nums">{formatTokens(m.totalOutputTokens)}</TableCell>
+                          <TableCell className="text-right tabular-nums pr-4">{m.outputTokensPerSec != null ? m.outputTokensPerSec : '—'}</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
