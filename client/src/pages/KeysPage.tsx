@@ -121,6 +121,8 @@ function UnifiedKeySection() {
         <code className="font-mono">{baseUrl}</code>
         <span className="text-muted-foreground">Endpoint</span>
         <code className="font-mono">/v1/chat/completions</code>
+        <span className="text-muted-foreground">Model</span>
+        <code className="font-mono">freellmapi/auto</code>
       </div>
     </section>
   )
