@@ -148,7 +148,7 @@ client = OpenAI(
 )
 
 resp = client.chat.completions.create(
-    model="auto",  # let the router pick; or specify e.g. "gemini-2.5-flash"
+    model="freellmapi/auto",  # let the router pick; or specify e.g. "gemini-2.5-flash"
     messages=[{"role": "user", "content": "Summarise the fall of Rome in one sentence."}],
 )
 print(resp.choices[0].message.content)
@@ -162,7 +162,7 @@ curl http://localhost:3001/v1/chat/completions \
   -H "Authorization: Bearer freellmapi-your-unified-key" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "auto",
+    "model": "freellmapi/auto",
     "messages": [{"role": "user", "content": "hi"}]
   }'
 ```
@@ -171,7 +171,7 @@ curl http://localhost:3001/v1/chat/completions \
 
 ```python
 stream = client.chat.completions.create(
-    model="auto",
+    model="freellmapi/auto",
     messages=[{"role": "user", "content": "Stream me a haiku about SQLite."}],
     stream=True,
 )
@@ -199,7 +199,7 @@ tools = [{
 
 # 1. Model asks for a tool call
 first = client.chat.completions.create(
-    model="auto",
+    model="freellmapi/auto",
     messages=[{"role": "user", "content": "What's the weather in Karachi?"}],
     tools=tools,
     tool_choice="required",
@@ -208,7 +208,7 @@ call = first.choices[0].message.tool_calls[0]
 
 # 2. You execute the tool, feed the result back
 final = client.chat.completions.create(
-    model="auto",
+    model="freellmapi/auto",
     messages=[
         {"role": "user", "content": "What's the weather in Karachi?"},
         first.choices[0].message,
