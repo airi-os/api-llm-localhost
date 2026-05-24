@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/api'
 import { Switch } from '@/components/ui/switch'
@@ -55,6 +56,7 @@ const platformColors: Record<string, string> = {
 }
 
 function TokenUsageBar({ data }: { data: TokenUsageData }) {
+  const [expanded, setExpanded] = useState(false)
   const { totalBudget, totalUsed, models } = data
   const remaining = Math.max(0, totalBudget - totalUsed)
   const remainingPct = totalBudget > 0 ? Math.round((remaining / totalBudget) * 100) : 0
@@ -70,11 +72,19 @@ function TokenUsageBar({ data }: { data: TokenUsageData }) {
     <section className="rounded-lg border bg-card p-5">
       <div className="flex items-baseline justify-between mb-3">
         <h2 className="text-sm font-medium">Monthly token budget</h2>
-        <span className="text-xs text-muted-foreground tabular-nums">
-          <span className="text-foreground font-medium">{formatTokens(remaining)}</span> remaining
-          <span className="mx-1.5">·</span>
-          {remainingPct}% of {formatTokens(totalBudget)}
-        </span>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-muted-foreground tabular-nums">
+            <span className="text-foreground font-medium">{formatTokens(remaining)}</span> remaining
+            <span className="mx-1.5">·</span>
+            {remainingPct}% of {formatTokens(totalBudget)}
+          </span>
+          <button
+            onClick={() => setExpanded(v => !v)}
+            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+          >
+            {expanded ? 'Hide models' : `${models.length} models`}
+          </button>
+        </div>
       </div>
 
       <div className="flex h-2.5 rounded-full overflow-hidden bg-muted">
@@ -97,19 +107,21 @@ function TokenUsageBar({ data }: { data: TokenUsageData }) {
         )}
       </div>
 
-      <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-5 gap-y-1.5 text-xs tabular-nums">
-        {modelsWithWidth.map((m, i) => (
-          <div key={i} className="flex items-center gap-2 min-w-0">
-            <span
-              className="size-2 rounded-sm flex-shrink-0"
-              style={{ backgroundColor: platformColors[m.platform] ?? '#94a3b8' }}
-            />
-            <span className="truncate">{m.displayName}</span>
-            <span className="flex-1" />
-            <span className="font-mono text-muted-foreground">{formatTokens(m.remainingTokens)}</span>
-          </div>
-        ))}
-      </div>
+      {expanded && (
+        <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-5 gap-y-1.5 text-xs tabular-nums">
+          {modelsWithWidth.map((m, i) => (
+            <div key={i} className="flex items-center gap-2 min-w-0">
+              <span
+                className="size-2 rounded-sm flex-shrink-0"
+                style={{ backgroundColor: platformColors[m.platform] ?? '#94a3b8' }}
+              />
+              <span className="truncate">{m.displayName}</span>
+              <span className="flex-1" />
+              <span className="font-mono text-muted-foreground">{formatTokens(m.remainingTokens)}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   )
 }
