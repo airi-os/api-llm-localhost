@@ -31,7 +31,7 @@ interface KeyRow {
 // Better models win more often but not exclusively — exploration is automatic
 // and proportional to uncertainty, without degenerating into a single winner.
 
-const ANALYTICS_WINDOW_MS = 24 * 60 * 60 * 1000;
+const ANALYTICS_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const ANALYTICS_CACHE_TTL_MS = 60 * 1000;
 
 // Beta prior: Beta(PRIOR_SUCCESS, PRIOR_FAILURE) — equivalent to 4 prior
