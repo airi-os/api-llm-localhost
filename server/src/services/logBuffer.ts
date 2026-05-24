@@ -7,6 +7,8 @@ const LOG_FILE_PATH = path.resolve(__dirname, '../../data/server.log');
 
 const V1_MAX_ENTRIES = 5000;
 const OTHER_MAX_ENTRIES = 500;
+const LOG_RETENTION_DAYS = 28;
+const TRIM_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
 export type LogLevel = 'info' | 'warn' | 'error';
 
@@ -40,22 +42,38 @@ function appendToDisk(entry: LogEntry): void {
   }
 }
 
+function parseDiskEntries(): LogEntry[] {
+  if (!fs.existsSync(LOG_FILE_PATH)) return [];
+  const content = fs.readFileSync(LOG_FILE_PATH, 'utf8');
+  return content.split('\n').filter(l => l.trim()).flatMap(line => {
+    try { return [JSON.parse(line) as LogEntry]; }
+    catch { return []; }
+  });
+}
+
+function trimDisk(): void {
+  try {
+    const all = parseDiskEntries();
+    const cutoff = new Date(Date.now() - LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+    const retained = all
+      .filter(e => e.timestamp >= cutoff)
+      .slice(-V1_MAX_ENTRIES);
+    if (retained.length < all.length) {
+      fs.writeFileSync(LOG_FILE_PATH, retained.map(e => JSON.stringify(e)).join('\n') + '\n');
+    }
+  } catch { /* ignore */ }
+}
+
 function loadFromDisk(): void {
   try {
-    if (!fs.existsSync(LOG_FILE_PATH)) return;
-    const content = fs.readFileSync(LOG_FILE_PATH, 'utf8');
-    const lines = content.split('\n').filter(l => l.trim());
-    const all = lines.flatMap(line => {
-      try { return [JSON.parse(line) as LogEntry]; }
-      catch { return []; }
-    });
-    const recent = all.slice(-V1_MAX_ENTRIES);
+    const all = parseDiskEntries();
+    const cutoff = new Date(Date.now() - LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+    const recent = all.filter(e => e.timestamp >= cutoff).slice(-V1_MAX_ENTRIES);
     v1Buffer.push(...recent);
     if (recent.length > 0) {
       nextId = Math.max(...recent.map(e => e.id)) + 1;
     }
-    // Trim the file on startup to prevent unbounded growth
-    if (all.length > V1_MAX_ENTRIES) {
+    if (recent.length < all.length) {
       try {
         fs.writeFileSync(LOG_FILE_PATH, recent.map(e => JSON.stringify(e)).join('\n') + '\n');
       } catch { /* ignore */ }
@@ -66,6 +84,7 @@ function loadFromDisk(): void {
 }
 
 loadFromDisk();
+setInterval(trimDisk, TRIM_INTERVAL_MS).unref();
 
 const NOISE_PREFIXES = ['[HTTP] GET /api/logs', '[HTTP] GET /api/ping'];
 
