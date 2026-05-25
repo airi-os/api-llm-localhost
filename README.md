@@ -66,6 +66,7 @@ The problem is that stacking them by hand is painful: fourteen different SDKs, f
 - **Streaming and non-streaming** — Server-Sent Events for `stream: true`, JSON response otherwise. Every provider adapter implements both.
 - **Tool calling** — OpenAI-style `tools` / `tool_choice` requests are passed through, and assistant `tool_calls` + `tool` role follow-up messages round-trip across providers.
 - **Thompson-sampling router** — Each request draws a score from each model's Beta posterior (`Beta(successes + 2, failures + 2)`), adds a normalized tok/s speed term, and subtracts any active rate-limit penalty. The stochastic draw means better models win more often without locking out unproven ones — exploration is automatic and proportional to uncertainty. The dashboard shows the deterministic Bayesian mean of the same posterior for human readability. Rate-limit penalties are model-scoped but only applied once all keys for that model are exhausted — a single key hitting a 429 does not down-rank the model if other keys remain available.
+- **Two routing modes** — `freellmapi/auto` (default) balances speed, reliability, and intelligence. `freellmapi/auto-smart` prioritizes model capability (60% intelligence weight) over raw speed — better for complex reasoning tasks where you want the smartest available model even if it streams more slowly.
 - **Automatic fallover** — If the chosen provider returns a 429, 5xx, or times out, the router skips it, puts the key on a short cooldown, and retries on the next model in your fallback chain (up to 20 attempts).
 - **Per-key rate tracking** — RPM, RPD, TPM, and TPD counters per `(platform, model, key)` so the router always picks a key that's under its caps.
 - **Sticky sessions** — Multi-turn conversations keep talking to the same model for 30 minutes to avoid the hallucination spike that comes from mid-conversation model switches.
@@ -153,6 +154,17 @@ resp = client.chat.completions.create(
 )
 print(resp.choices[0].message.content)
 print("Routed via:", resp.headers.get("x-routed-via"))
+```
+
+**Choosing a routing mode**
+
+```python
+# Balanced (default): Optimizes for speed, reliability, and basic capability
+client.chat.completions.create(model="freellmapi/auto", ...)
+
+# Smart: Prioritizes intelligence (60% weight) — better for reasoning, coding, analysis
+# May trade speed for capability, preferring models like Gemini 2.5 Pro or GPT-4o
+client.chat.completions.create(model="freellmapi/auto-smart", ...)
 ```
 
 **curl**
@@ -256,9 +268,12 @@ Request volume, success rate, tokens in and out, average latency, and per-provid
                              │  Router (Thompson-sampling bandit)                   │
                              │   1. For each enabled model, sample a score:         │
                              │        score = Beta(wins+2, losses+2) sample         │
+                             │              + INTELLIGENCE_WEIGHT × normalized rank │
                              │              + SPEED_WEIGHT × (tok/s / max tok/s)    │
-                             │              − slow-model penalty (if < 10 tok/s)    │
-                             │              − rate-limit penalty × 0.05             │
+                             │              + TTFB_WEIGHT × ttfb_score              │
+                             │              - slow-model penalty (if < 10 tok/s)    │
+                             │              - rate-limit penalty × 0.05             │
+                             │      (balanced: intelligence 10%, smart mode: 60%)   │
                              │   2. Sort descending; sticky session pins preferred. │
                              │   3. First model with a healthy, under-limit key     │
                              │      wins; decrypt key, call provider SDK.           │
