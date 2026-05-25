@@ -10,8 +10,8 @@ fallbackRouter.get('/', (_req: Request, res: Response) => {
   const db = getDb();
   refreshStatsCache(db, true);
   const rows = db.prepare(`
-    SELECT fc.model_db_id, fc.enabled,
-           m.platform, m.model_id, m.display_name, m.intelligence_rank,
+    SELECT fc.model_db_id, fc.priority, fc.enabled,
+           m.platform, m.model_id, m.display_name, m.intelligence_rank, m.speed_rank,
            m.rpm_limit, m.rpd_limit, m.monthly_token_budget
     FROM fallback_config fc
     JOIN models m ON m.id = fc.model_db_id AND m.enabled = 1
@@ -54,6 +54,7 @@ fallbackRouter.get('/', (_req: Request, res: Response) => {
     const penaltyVal = penalty?.penalty ?? 0;
     return {
       modelDbId: r.model_db_id,
+      priority: r.priority,
       score: Math.round(score * 1000) / 1000,
       smartScore: Math.round(smartScore * 1000) / 1000,
       effectiveScore: Math.round((score - penaltyVal * PENALTY_SCORE_WEIGHT) * 1000) / 1000,
@@ -67,6 +68,8 @@ fallbackRouter.get('/', (_req: Request, res: Response) => {
       platform: r.platform,
       modelId: r.model_id,
       displayName: r.display_name,
+      intelligenceRank: r.intelligence_rank,
+      speedRank: r.speed_rank,
       rpmLimit: r.rpm_limit,
       rpdLimit: r.rpd_limit,
       monthlyTokenBudget: r.monthly_token_budget,
@@ -74,13 +77,14 @@ fallbackRouter.get('/', (_req: Request, res: Response) => {
     };
   });
 
-  result.sort((a, b) => b.effectiveScore - a.effectiveScore);
+  result.sort((a, b) => a.priority - b.priority);
 
   res.json(result);
 });
 
 const updateSchema = z.array(z.object({
   modelDbId: z.number(),
+  priority: z.number().int().positive().optional(),
   enabled: z.boolean(),
 }));
 
@@ -92,13 +96,47 @@ fallbackRouter.put('/', (req: Request, res: Response) => {
   }
 
   const db = getDb();
-  const update = db.prepare('UPDATE fallback_config SET enabled = ? WHERE model_db_id = ?');
+  const update = db.prepare(`
+    UPDATE fallback_config
+       SET enabled = ?,
+           priority = COALESCE(?, priority)
+     WHERE model_db_id = ?
+  `);
   const updateAll = db.transaction(() => {
     for (const entry of parsed.data) {
-      update.run(entry.enabled ? 1 : 0, entry.modelDbId);
+      update.run(entry.enabled ? 1 : 0, entry.priority ?? null, entry.modelDbId);
     }
   });
   updateAll();
+
+  res.json({ success: true });
+});
+
+const sortSchema = z.enum(['intelligence', 'speed']);
+
+fallbackRouter.post('/sort/:criterion', (req: Request, res: Response) => {
+  const parsed = sortSchema.safeParse(req.params.criterion);
+  if (!parsed.success) {
+    res.status(400).json({ error: { message: 'Invalid sort criterion' } });
+    return;
+  }
+
+  const orderColumn = parsed.data === 'intelligence' ? 'm.intelligence_rank' : 'm.speed_rank';
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT fc.model_db_id
+      FROM fallback_config fc
+      JOIN models m ON m.id = fc.model_db_id
+     ORDER BY ${orderColumn} ASC, m.intelligence_rank ASC, m.display_name ASC
+  `).all() as { model_db_id: number }[];
+
+  const update = db.prepare('UPDATE fallback_config SET priority = ? WHERE model_db_id = ?');
+  const applySort = db.transaction(() => {
+    for (let i = 0; i < rows.length; i++) {
+      update.run(i + 1, rows[i].model_db_id);
+    }
+  });
+  applySort();
 
   res.json({ success: true });
 });

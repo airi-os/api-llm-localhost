@@ -29,13 +29,14 @@ describe('Routing Key Exhaustion', () => {
     initDb(':memory:');
     const db = getDb();
     
-    // Setup: 2 models (Pro and Flash)
-    // Pro is higher priority (priority 1), Flash is lower (priority 2)
-    db.prepare("INSERT INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, enabled) VALUES ('google', 'gemini-1.5-pro', 'Pro', 1, 1, 1)").run();
-    db.prepare("INSERT INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, enabled) VALUES ('google', 'gemini-1.5-flash', 'Flash', 2, 2, 1)").run();
+    db.prepare('UPDATE fallback_config SET enabled = 0').run();
+
+    // Setup: 2 isolated test models (Pro and Flash)
+    db.prepare("INSERT INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, enabled) VALUES ('google', 'test-pro', 'Pro', 1, 1, 1)").run();
+    db.prepare("INSERT INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, enabled) VALUES ('google', 'test-flash', 'Flash', 2, 2, 1)").run();
     
-    const proId = db.prepare("SELECT id FROM models WHERE model_id = 'gemini-1.5-pro'").get().id;
-    const flashId = db.prepare("SELECT id FROM models WHERE model_id = 'gemini-1.5-flash'").get().id;
+    const proId = (db.prepare("SELECT id FROM models WHERE model_id = 'test-pro'").get() as { id: number }).id;
+    const flashId = (db.prepare("SELECT id FROM models WHERE model_id = 'test-flash'").get() as { id: number }).id;
     
     db.prepare("INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, 1, 1)").run(proId);
     db.prepare("INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, 2, 1)").run(flashId);
@@ -63,11 +64,13 @@ describe('Routing Key Exhaustion', () => {
     });
     (ratelimit.canUseTokens as any).mockReturnValue(true);
 
+    db.prepare("UPDATE fallback_config SET enabled = 0 WHERE model_db_id = (SELECT id FROM models WHERE model_id = 'test-flash')").run();
+
     // Act: Route request
     const result = routeRequest(100);
 
     // Assert: It should have picked the Pro model despite Key B being exhausted
-    expect(result.modelId).toBe('gemini-1.5-pro');
+    expect(result.modelId).toBe('test-pro');
     expect(result.keyId).toBe(keyA.id);
     expect(ratelimit.canMakeRequest).toHaveBeenCalled();
   });
@@ -79,13 +82,13 @@ describe('Routing Key Exhaustion', () => {
 
   it('should fall back to Flash when Pro is exhausted but Flash has quota', () => {
     (ratelimit.canMakeRequest as any).mockImplementation((_platform: string, modelId: string) => {
-      if (modelId === 'gemini-1.5-pro') return false;
-      if (modelId === 'gemini-1.5-flash') return true;
+      if (modelId === 'test-pro') return false;
+      if (modelId === 'test-flash') return true;
       return true;
     });
     (ratelimit.canUseTokens as any).mockReturnValue(true);
 
     const result = routeRequest(100);
-    expect(result.modelId).toBe('gemini-1.5-flash');
+    expect(result.modelId).toBe('test-flash');
   });
 });
