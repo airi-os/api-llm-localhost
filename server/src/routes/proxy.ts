@@ -424,6 +424,16 @@ function normalizeChatMessages(messages: ChatMessage[]): ChatMessage[] {
   });
 }
 
+function isEmptyAssistantResponse(result: ChatCompletionResponse): boolean {
+  const choice = result.choices[0];
+  if (!choice) return true;
+
+  const hasToolCalls = (choice.message.tool_calls?.length ?? 0) > 0;
+  if (hasToolCalls) return false;
+
+  return typeof choice.message.content !== 'string' || choice.message.content.trim().length === 0;
+}
+
 function normalizeResponseTools(tools: z.infer<typeof responseCreateSchema>['tools']): ChatToolDefinition[] | undefined {
   if (!tools) return undefined;
 
@@ -1140,6 +1150,10 @@ async function handleChatCompletion(
           { temperature, max_tokens, top_p, tools, tool_choice, parallel_tool_calls },
         );
         const ttfbMs = Date.now() - start;
+
+        if (isEmptyAssistantResponse(result)) {
+          throw Object.assign(new Error(`Provider returned an empty assistant response from ${route.displayName}`), { status: 502 });
+        }
 
         const totalTokens = result.usage?.total_tokens ?? 0;
         recordTokens(route.platform, route.modelId, route.keyId, totalTokens);

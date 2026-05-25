@@ -178,6 +178,67 @@ describe('Proxy tool-calling support', () => {
     expect(new Set(seenModels).size).toBeGreaterThan(1);
   });
 
+  it('retries when a provider returns an empty assistant message', async () => {
+    const origFetch = global.fetch;
+    const seenModels: string[] = [];
+    let firstAttempt = true;
+
+    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
+        return origFetch(url, init);
+      }
+      if (!urlStr.includes('/chat/completions')) return origFetch(url, init);
+
+      const body = JSON.parse((init as any).body);
+      seenModels.push(body.model);
+
+      if (firstAttempt) {
+        firstAttempt = false;
+        return {
+          ok: true,
+          json: () => Promise.resolve({
+            id: 'chatcmpl-empty',
+            object: 'chat.completion',
+            created: 123,
+            model: body.model,
+            choices: [{
+              index: 0,
+              message: { role: 'assistant', content: '' },
+              finish_reason: 'stop',
+            }],
+            usage: { prompt_tokens: 4, completion_tokens: 0, total_tokens: 4 },
+          }),
+        } as any;
+      }
+
+      return {
+        ok: true,
+        json: () => Promise.resolve({
+          id: 'chatcmpl-retry',
+          object: 'chat.completion',
+          created: 123,
+          model: body.model,
+          choices: [{
+            index: 0,
+            message: { role: 'assistant', content: 'recovered answer' },
+            finish_reason: 'stop',
+          }],
+          usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+        }),
+      } as any;
+    });
+
+    const { status, body } = await request(app, 'POST', '/v1/chat/completions', {
+      messages: [{ role: 'user', content: 'Say something useful.' }],
+    });
+
+    expect(status).toBe(200);
+    expect(body.choices[0].message.content).toBe('recovered answer');
+    expect(seenModels.length).toBeGreaterThan(1);
+    expect(new Set(seenModels).size).toBeGreaterThan(1);
+  });
+
   it('accepts assistant tool_calls + tool messages in follow-up turns', async () => {
     const origFetch = global.fetch;
     let providerBody: any = null;
@@ -379,7 +440,7 @@ describe('Proxy tool-calling support', () => {
       input: 'remember the blank turn',
     });
     expect(first.status).toBe(200);
-    expect(first.body.output_text).toBe('');
+    expect(first.body.output_text).toBe('follow-up ok');
 
     const second = await request(app, 'POST', '/v1/responses', {
       model: 'freellmapi/auto',
@@ -388,8 +449,9 @@ describe('Proxy tool-calling support', () => {
     });
 
     expect(second.status).toBe(200);
-    expect(providerBodies[1].messages).toEqual([
+    expect(providerBodies[2].messages).toEqual([
       { role: 'user', content: 'remember the blank turn' },
+      { role: 'assistant', content: 'follow-up ok' },
       { role: 'user', content: 'continue' },
     ]);
     expect(second.body.output_text).toBe('follow-up ok');
