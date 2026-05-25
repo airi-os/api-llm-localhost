@@ -18,7 +18,7 @@ const PLATFORMS: { value: Platform; label: string; keyUrl?: string }[] = [
   { value: 'openrouter', label: 'OpenRouter', keyUrl: 'https://openrouter.ai/settings/keys' },
   { value: 'github', label: 'GitHub Models', keyUrl: 'https://github.com/settings/tokens' },
   { value: 'cohere', label: 'Cohere', keyUrl: 'https://dashboard.cohere.com/api-keys' },
-  { value: 'cloudflare', label: 'Cloudflare Workers AI', keyUrl: 'https://dash.cloudflare.com/profile/api-tokens' },
+  { value: 'cloudflare', label: 'Cloudflare Workers AI', keyUrl: 'https://dash.cloudflare.com/?to=/:account/ai/workers-ai' },
   { value: 'zhipu', label: 'Zhipu AI (Z.ai)', keyUrl: 'https://open.bigmodel.cn/usercenter/apikeys' },
   { value: 'ollama', label: 'Ollama Cloud', keyUrl: 'https://ollama.com/settings/api-keys' },
   { value: 'kilo', label: 'Kilo Gateway (anon ok)', keyUrl: 'https://kilolabs.ai/' },
