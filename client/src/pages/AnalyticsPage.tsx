@@ -47,9 +47,20 @@ type SortDir = 'asc' | 'desc'
 
 function sortModels(rows: any[], key: SortKey, dir: SortDir) {
   return [...rows].sort((a, b) => {
-    const av = a[key] ?? (typeof a[key] === 'number' ? -Infinity : '')
-    const bv = b[key] ?? (typeof b[key] === 'number' ? -Infinity : '')
-    const cmp = typeof av === 'string' ? av.localeCompare(bv) : (av as number) - (bv as number)
+    const av = a[key]
+    const bv = b[key]
+    const aEmpty = av == null
+    const bEmpty = bv == null
+
+    if (aEmpty || bEmpty) {
+      if (aEmpty && bEmpty) return 0
+      return aEmpty ? 1 : -1
+    }
+
+    const cmp = typeof av === 'string'
+      ? av.localeCompare(bv)
+      : (av as number) - (bv as number)
+
     return dir === 'asc' ? cmp : -cmp
   })
 }
