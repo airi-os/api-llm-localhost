@@ -181,12 +181,6 @@ const assistantMessageSchema = z.object({
   content: z.string().nullable().optional(),
   name: z.string().optional(),
   tool_calls: z.array(toolCallSchema).optional(),
-}).refine((msg) => {
-  const hasContent = typeof msg.content === 'string' && msg.content.length > 0;
-  const hasToolCalls = (msg.tool_calls?.length ?? 0) > 0;
-  return hasContent || hasToolCalls;
-}, {
-  message: 'assistant messages must include non-empty content or tool_calls',
 });
 
 const toolMessageSchema = z.object({
@@ -299,7 +293,7 @@ const responseCreateSchema = z.object({
   parallel_tool_calls: z.boolean().optional(),
 });
 
-type ChatResponseFormatter = (result: ChatCompletionResponse) => unknown;
+type ChatResponseFormatter = (result: ChatCompletionResponse, messages: ChatMessage[]) => unknown;
 type ResponseTool = z.infer<typeof responseCreateSchema>['tools'] extends Array<infer T> | undefined ? T : never;
 type ResponseInputItem = Exclude<z.infer<typeof responseInputSchema>, string>[number];
 
@@ -418,6 +412,18 @@ function extractResponseText(content: z.infer<typeof responseInputMessageSchema>
   return content.map(part => part.text ?? '').join('');
 }
 
+function normalizeChatMessages(messages: ChatMessage[]): ChatMessage[] {
+  return messages.flatMap((message) => {
+    if (message.role !== 'assistant') return [message];
+
+    const hasContent = typeof message.content === 'string' && message.content.length > 0;
+    const hasToolCalls = (message.tool_calls?.length ?? 0) > 0;
+    if (!hasContent && !hasToolCalls) return [];
+
+    return [message];
+  });
+}
+
 function normalizeResponseTools(tools: z.infer<typeof responseCreateSchema>['tools']): ChatToolDefinition[] | undefined {
   if (!tools) return undefined;
 
@@ -458,18 +464,24 @@ function getPreviousResponseMessages(previousResponseId: string | undefined): Ch
 }
 
 function saveResponseSession(responseId: string, itemId: string, messages: ChatMessage[], outputText: string, toolCalls?: ChatToolCall[]): void {
-  const assistantMessage: ChatMessage = {
-    role: 'assistant',
-    content: outputText || null,
-    ...(toolCalls && toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
-  };
-  const stored = [...messages.map(message => ({ ...message })), assistantMessage];
+  const hasContent = outputText.length > 0;
+  const hasToolCalls = (toolCalls?.length ?? 0) > 0;
+  const assistantMessage = (hasContent || hasToolCalls)
+    ? ({
+        role: 'assistant',
+        content: hasContent ? outputText : null,
+        ...(hasToolCalls ? { tool_calls: toolCalls } : {}),
+      } satisfies ChatMessage)
+    : undefined;
+  const stored = assistantMessage
+    ? [...messages.map(message => ({ ...message })), assistantMessage]
+    : [...messages.map(message => ({ ...message }))];
   responseSessionMap.set(responseId, {
     messages: stored,
     lastUsed: Date.now(),
   });
   console.log(`[Session] saved response_id="${responseId}" with ${stored.length} msg(s) (map size=${responseSessionMap.size})`);
-  responseItemMap.set(itemId, assistantMessage);
+  if (assistantMessage) responseItemMap.set(itemId, assistantMessage);
 
   if (responseSessionMap.size <= MAX_RESPONSE_SESSIONS) return;
 
@@ -855,7 +867,7 @@ proxyRouter.post('/responses', async (req: Request, res: Response) => {
 
   const responseStreamContext = parsed.data.stream ? createResponsesStreamContext(messages) : undefined;
 
-  await handleChatCompletion(req, res, result => formatResponseApiResult(result, messages), {
+  await handleChatCompletion(req, res, (result, normalizedMessages) => formatResponseApiResult(result, normalizedMessages), {
     model: parsed.data.model,
     messages,
     temperature: parsed.data.temperature,
@@ -928,6 +940,7 @@ async function handleChatCompletion(
       ...(m.name ? { name: m.name } : {}),
     };
   });
+  const normalizedMessages = normalizeChatMessages(messages);
 
   // Token estimation is intentionally a heuristic (~4 chars per token). Used
   // for routing decisions (skip a model whose budget is too small) and for
@@ -935,17 +948,17 @@ async function handleChatCompletion(
   // Non-streaming requests reconcile against the provider's real `usage` block
   // (see line ~340). Streaming will drift from real consumption — accepted
   // tradeoff because per-request usage isn't always returned mid-stream.
-  const estimatedInputTokens = messages.reduce((sum, m) => {
+  const estimatedInputTokens = normalizedMessages.reduce((sum, m) => {
     if (typeof m.content !== 'string') return sum;
     return sum + Math.ceil(m.content.length / 4);
   }, 0);
   const estimatedTotal = estimatedInputTokens + (max_tokens ?? 1000);
 
-  const lastUserMessage = [...messages].reverse().find(m => m.role === 'user');
+  const lastUserMessage = [...normalizedMessages].reverse().find(m => m.role === 'user');
   const preview = process.env.LOG_SENSITIVE_DATA === 'true' && typeof lastUserMessage?.content === 'string'
     ? lastUserMessage.content.slice(0, 120).replace(/\n/g, ' ')
     : '';
-  console.log(`[Request] ${rawModel ?? 'auto'} | ${messages.length} msg(s) | stream=${!!stream}${preview ? ` | "${preview}"` : ''}`);
+  console.log(`[Request] ${rawModel ?? 'auto'} | ${normalizedMessages.length} msg(s) | stream=${!!stream}${preview ? ` | "${preview}"` : ''}`);
 
   // Explicit `model` field pins routing. If the catalog has no enabled row
   // matching the requested id, return 400 — silently auto-routing to a
@@ -972,7 +985,7 @@ async function handleChatCompletion(
       return;
     }
   } else {
-    preferredModel = getStickyModel(messages, routingMode);
+    preferredModel = getStickyModel(normalizedMessages, routingMode);
   }
 
   // Retry loop: skip bad keys and, for non-rate-limit errors, skip the model
@@ -1023,7 +1036,7 @@ async function handleChatCompletion(
         let ttfbMs: number | null = null;
         try {
           const gen = route.provider.streamChatCompletion(
-            route.apiKey, messages, route.modelId,
+            route.apiKey, normalizedMessages, route.modelId,
             { temperature, max_tokens, top_p, tools, tool_choice, parallel_tool_calls },
           );
 
@@ -1088,7 +1101,7 @@ async function handleChatCompletion(
 
           recordTokens(route.platform, route.modelId, route.keyId, estimatedInputTokens + totalOutputTokens);
           recordSuccess(route.modelDbId);
-          setStickyModel(messages, route.modelDbId, routingMode);
+          setStickyModel(normalizedMessages, route.modelDbId, routingMode);
           logRequest(route.platform, route.modelId, 'success', estimatedInputTokens, totalOutputTokens, Date.now() - start, ttfbMs, null);
           return;
         } catch (streamErr: any) {
@@ -1123,7 +1136,7 @@ async function handleChatCompletion(
         }
       } else {
         const result = await route.provider.chatCompletion(
-          route.apiKey, messages, route.modelId,
+          route.apiKey, normalizedMessages, route.modelId,
           { temperature, max_tokens, top_p, tools, tool_choice, parallel_tool_calls },
         );
         const ttfbMs = Date.now() - start;
@@ -1131,11 +1144,11 @@ async function handleChatCompletion(
         const totalTokens = result.usage?.total_tokens ?? 0;
         recordTokens(route.platform, route.modelId, route.keyId, totalTokens);
         recordSuccess(route.modelDbId);
-        setStickyModel(messages, route.modelDbId, routingMode);
+        setStickyModel(normalizedMessages, route.modelDbId, routingMode);
 
         res.setHeader('X-Routed-Via', `${route.platform}/${route.modelId}`);
         if (attempt > 0) res.setHeader('X-Fallback-Attempts', String(attempt));
-        const responseBody = formatResponse ? formatResponse(result) : result;
+        const responseBody = formatResponse ? formatResponse(result, normalizedMessages) : result;
         res.json(responseBody);
         logFinalModelResponse(route, responseBody, ttfbMs);
 
@@ -1167,7 +1180,7 @@ async function handleChatCompletion(
 
       // Non-retryable error (auth, etc.): don't retry, but clear sticky so the
       // next request in this conversation isn't pinned to the broken model.
-      clearStickyModel(messages, routingMode);
+      clearStickyModel(normalizedMessages, routingMode);
       res.status(502).json({
         error: {
           message: `Provider error (${route.displayName}): ${getErrorMessage(err)}`,

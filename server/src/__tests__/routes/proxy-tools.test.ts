@@ -343,6 +343,58 @@ describe('Proxy tool-calling support', () => {
     expect(second.body.output_text).toBe('second answer');
   });
 
+  it('drops empty assistant turns from Responses history so follow-ups still route', async () => {
+    const origFetch = global.fetch;
+    const providerBodies: any[] = [];
+
+    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      if (urlStr.includes('api.groq.com/openai/v1/chat/completions')) {
+        providerBodies.push(JSON.parse((init as any).body));
+        const content = providerBodies.length === 1 ? '' : 'follow-up ok';
+        return {
+          ok: true,
+          json: () => Promise.resolve({
+            id: `chatcmpl-empty-${providerBodies.length}`,
+            object: 'chat.completion',
+            created: 123,
+            model: 'openai/gpt-oss-120b',
+            choices: [{
+              index: 0,
+              message: {
+                role: 'assistant',
+                content,
+              },
+              finish_reason: 'stop',
+            }],
+            usage: { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 },
+          }),
+        } as any;
+      }
+      return origFetch(url, init);
+    });
+
+    const first = await request(app, 'POST', '/v1/responses', {
+      model: 'freellmapi/auto',
+      input: 'remember the blank turn',
+    });
+    expect(first.status).toBe(200);
+    expect(first.body.output_text).toBe('');
+
+    const second = await request(app, 'POST', '/v1/responses', {
+      model: 'freellmapi/auto',
+      previous_response_id: first.body.id,
+      input: 'continue',
+    });
+
+    expect(second.status).toBe(200);
+    expect(providerBodies[1].messages).toEqual([
+      { role: 'user', content: 'remember the blank turn' },
+      { role: 'user', content: 'continue' },
+    ]);
+    expect(second.body.output_text).toBe('follow-up ok');
+  });
+
   it('streams Responses API text deltas with flat function tools', async () => {
     const origFetch = global.fetch;
     let providerBody: any = null;
