@@ -144,6 +144,13 @@ register(new OpenAICompatProvider({
   baseUrl: 'https://api.inceptionlabs.ai/v1',
 }));
 
+// LongCat — OpenAI-compatible. Free tier model (longcat-2.0-preview).
+register(new OpenAICompatProvider({
+  platform: 'longcat',
+  name: 'LongCat',
+  baseUrl: 'https://api.longcat.chat/openai',
+}));
+
 // Chutes was evaluated for V11 and dropped: probe with a free-tier key
 // returned 402 on every model — "Quota exceeded and account balance is
 // $0.0, please pay with fiat or send tao". The "free" tier requires a

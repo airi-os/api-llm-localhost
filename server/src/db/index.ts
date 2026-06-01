@@ -50,6 +50,7 @@ export function initDb(dbPath?: string): Database.Database {
   migrateModelsV13(db);
   migrateModelsV14(db);
   migrateModelsV15(db);
+  migrateModelsV16(db);
   ensureUnifiedKey(db);
 
   console.log(`Database initialized at ${resolvedPath}`);
@@ -1040,6 +1041,32 @@ function migrateModelsV15(db: Database.Database) {
   // 1M context, strong tool-use and code-gen. Weekly budget of 1.25T tokens.
   const additions: Array<[string, string, string, number, number, string, number | null, number | null, number | null, number | null, string, number | null]> = [
     ['openrouter', 'openrouter/owl-alpha', 'Owl Alpha (free)', 6, 7, 'Frontier', 20, 200, null, null, '~6M', 1048756],
+  ];
+  const apply = db.transaction(() => {
+    for (const a of additions) insert.run(...a);
+    const missing = db.prepare(`
+      SELECT m.id FROM models m
+      LEFT JOIN fallback_config f ON m.id = f.model_db_id
+      WHERE f.id IS NULL ORDER BY m.intelligence_rank ASC
+    `).all() as { id: number }[];
+    if (missing.length > 0) {
+      const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
+      const addFb = db.prepare('INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, ?, 1)');
+      for (let i = 0; i < missing.length; i++) addFb.run(missing[i].id, maxPriority + i + 1);
+    }
+  });
+  apply();
+}
+
+function migrateModelsV16(db: Database.Database) {
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, size_label, rpm_limit, rpd_limit, tpm_limit, tpd_limit, monthly_token_budget, context_window)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  // longcat-2.0-preview: LongCat's free frontier model, same architecture as Owl Alpha.
+  // 1M+ context, strong agentic capabilities.
+  const additions: Array<[string, string, string, number, number, string, number | null, number | null, number | null, number | null, string, number | null]> = [
+    ['longcat', 'longcat/longcat-2.0-preview', 'LongCat 2.0 Preview (free)', 6, 7, 'Frontier', 20, 200, null, null, '~6M', 1048756],
   ];
   const apply = db.transaction(() => {
     for (const a of additions) insert.run(...a);

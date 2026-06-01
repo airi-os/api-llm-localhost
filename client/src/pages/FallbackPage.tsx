@@ -104,6 +104,7 @@ const platformColors: Record<string, string> = {
   kilo:        '#7c3aed',
   pollinations: '#a855f7',
   llm7:        '#0ea5e9',
+  longcat:     '#ff6b35',
 }
 
 function TokenUsageBar({ data }: { data: TokenUsageData }) {
