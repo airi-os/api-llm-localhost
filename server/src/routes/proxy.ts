@@ -53,18 +53,27 @@ function getStickyModel(messages: ChatMessage[], routingMode: RoutingMode): numb
 
 function getStickyKey(messages: ChatMessage[], routingMode: RoutingMode): number | undefined {
   const key = getSessionKey(messages, routingMode);
-  if (!key) return undefined;
-
-  const entry = stickySessionMap.get(key);
-  if (!entry) return undefined;
-
-  if (Date.now() - entry.lastUsed > STICKY_TTL_MS) {
-    stickySessionMap.delete(key);
+  if (!key) {
+    console.log(`[Sticky] key miss session=unset | no session key derivable from messages`);
     return undefined;
   }
 
-  if (entry.keyId) {
+  const entry = stickySessionMap.get(key);
+  if (!entry) {
+    console.log(`[Sticky] key miss session=${key.slice(0, 8)} | no sticky entry`);
+    return undefined;
+  }
+
+  if (Date.now() - entry.lastUsed > STICKY_TTL_MS) {
+    stickySessionMap.delete(key);
+    console.log(`[Sticky] key expired session=${key.slice(0, 8)} | ttl=${STICKY_TTL_MS}ms`);
+    return undefined;
+  }
+
+  if (entry.keyId !== undefined) {
     console.log(`[Sticky] key hit session=${key.slice(0, 8)} → keyId=${entry.keyId}`);
+  } else {
+    console.log(`[Sticky] key unset session=${key.slice(0, 8)} | sticky entry has no keyId`);
   }
   return entry.keyId;
 }
@@ -77,11 +86,22 @@ function clearStickyModel(messages: ChatMessage[], routingMode: RoutingMode) {
   console.log(`[Sticky] cleared key=${key.slice(0, 8)} | msgs=${messages.length} → non-retryable error`);
 }
 
+function clearStickyKey(messages: ChatMessage[], routingMode: RoutingMode) {
+  const key = getSessionKey(messages, routingMode);
+  if (!key) return;
+  const entry = stickySessionMap.get(key);
+  if (!entry) return;
+  const clearedKeyId = entry.keyId;
+  const clearedModelDbId = entry.modelDbId;
+  stickySessionMap.delete(key);
+  console.log(`[Sticky] cleared key=${key.slice(0, 8)} | modelDbId=${clearedModelDbId} keyId=${clearedKeyId} → auth error, retrying`);
+}
+
 function setStickyModel(messages: ChatMessage[], modelDbId: number, routingMode: RoutingMode, keyId?: number) {
   const key = getSessionKey(messages, routingMode);
   if (!key) return;
   stickySessionMap.set(key, { modelDbId, keyId, lastUsed: Date.now() });
-  console.log(`[Sticky] set key=${key.slice(0, 8)} | msgs=${messages.length} → modelDbId=${modelDbId}${keyId ? ` keyId=${keyId}` : ''}`);
+  console.log(`[Sticky] set key=${key.slice(0, 8)} | msgs=${messages.length} → modelDbId=${modelDbId}${keyId !== undefined ? ` keyId=${keyId}` : ''}`);
 
   if (stickySessionMap.size > 500) {
     const now = Date.now();
@@ -1022,7 +1042,7 @@ async function handleChatCompletion(
   let preferredKeyId: number | undefined;
   if (preferredModel) {
     const stickyKeyId = getStickyKey(normalizedMessages, routingMode);
-    if (stickyKeyId) {
+    if (stickyKeyId !== undefined) {
       const db = getDb();
       const row = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
       if (row?.platform === 'longcat') {
@@ -1234,6 +1254,14 @@ async function handleChatCompletion(
         }
         if (isRateLimitError(err)) {
           setCooldown(route.platform, route.modelId, route.keyId, 120_000);
+        }
+        // Auth errors (401/403): clear the sticky key for this session so the
+        // retry unpins the broken key and falls through to round-robin.
+        if (isAuthError(err)) {
+          const authStatus = getErrorStatus(err);
+          console.warn(`[Proxy] auth error ${authStatus} from ${route.displayName}/${route.modelId}, clearing sticky key for session`);
+          clearStickyKey(normalizedMessages, routingMode);
+          preferredKeyId = undefined;
         }
         lastError = err;
         console.warn(`[Proxy] retryable ${summarizeProviderError(err)} from ${route.displayName}/${route.modelId}, fallback (attempt ${attempt + 1}/${MAX_RETRIES})`);

@@ -52,9 +52,32 @@
   - Run `npm test` in the `server/` directory
   - Verify no regressions in router tests, proxy tests, or sticky session behavior
 
-- [ ] 11. Manual testing
-  - Add a LongCat API key via the Keys page
-  - Send a chat completion request and verify it routes through LongCat
-  - Send a second request with the same first user message and verify the same key is used
-  - Check logs for sticky key hit messages
-  - Disable the LongCat key and verify fallback to round-robin with a new key
+- [x] 11. Manual testing
+   - Add a LongCat API key via the Keys page
+   - Send a chat completion request and verify it routes through LongCat
+   - Send a second request with the same first user message and verify the same key is used
+   - Check logs for sticky key hit messages
+   - Disable the LongCat key and verify fallback to round-robin with a new key
+
+## Code Review Fixes (2025-07-18)
+
+- [x] 12. Fix truthiness checks for keyId (use `!== undefined`)
+   - `getStickyKey()`: `if (entry.keyId)` → `if (entry.keyId !== undefined)`
+   - `setStickyModel()`: `keyId ? ...` → `keyId !== undefined ? ...`
+   - Sticky key determination: `if (stickyKeyId)` → `if (stickyKeyId !== undefined)`
+
+- [x] 13. Add `clearStickyKey()` and clear on 401/403 errors
+   - Added `clearStickyKey()` function (mirrors `clearStickyModel()`)
+   - In retry loop, detect 401/403 and call `clearStickyKey()` + unset `preferredKeyId`
+
+- [x] 14. Add diagnostic logs for sticky key miss/expired/unset cases
+   - `getStickyKey()` now logs miss (no session key, no entry), expired (TTL), and unset (entry exists but no keyId)
+
+- [x] 15. Verify round-robin for new sessions
+   - Confirmed: `getStickyKey()` returns `undefined` for new sessions → router falls through to round-robin
+   - Sticky key only stored after successful response via `setStickyModel()`
+
+- [x] 16. Update design.md
+   - Removed conflicting alternatives (always-pass, simpler approach, no-gating)
+   - Kept only the DB-gated approach for passing `preferredKeyId`
+   - Updated error handling flow and edge cases

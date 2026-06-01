@@ -52,21 +52,33 @@ const stickySessionMap = new Map<string, { modelDbId: number; keyId?: number; la
 
 ### 2. New `getStickyKey()` Function (`proxy.ts`)
 
-Added alongside `getStickyModel()`, following the same pattern:
+Added alongside `getStickyModel()`, following the same pattern. Includes diagnostic logging for miss/expired/unset cases and uses explicit `!== undefined` check for `keyId`:
 
 ```typescript
 function getStickyKey(messages: ChatMessage[], routingMode: RoutingMode): number | undefined {
   const key = getSessionKey(messages, routingMode);
-  if (!key) return undefined;
-
-  const entry = stickySessionMap.get(key);
-  if (!entry) return undefined;
-
-  if (Date.now() - entry.lastUsed > STICKY_TTL_MS) {
-    stickySessionMap.delete(key);
+  if (!key) {
+    console.log(`[Sticky] key miss session=unset | no session key derivable from messages`);
     return undefined;
   }
 
+  const entry = stickySessionMap.get(key);
+  if (!entry) {
+    console.log(`[Sticky] key miss session=\${key.slice(0, 8)} | no sticky entry`);
+    return undefined;
+  }
+
+  if (Date.now() - entry.lastUsed > STICKY_TTL_MS) {
+    stickySessionMap.delete(key);
+    console.log(`[Sticky] key expired session=\${key.slice(0, 8)} | ttl=\${STICKY_TTL_MS}ms`);
+    return undefined;
+  }
+
+  if (entry.keyId !== undefined) {
+    console.log(`[Sticky] key hit session=\${key.slice(0, 8)} → keyId=\${entry.keyId}`);
+  } else {
+    console.log(`[Sticky] key unset session=\${key.slice(0, 8)} | sticky entry has no keyId`);
+  }
   return entry.keyId;
 }
 ```
@@ -86,11 +98,20 @@ function setStickyModel(messages: ChatMessage[], modelDbId: number, routingMode:
 
 ### 4. Updated Retry Loop in `handleChatCompletion()` (`proxy.ts` ~line 1007)
 
-The retry loop currently builds `skipKeys` and `skipModels` sets. We add a `preferredKeyId` variable:
+The retry loop currently builds `skipKeys` and `skipModels` sets. We add a `preferredKeyId` variable that is only set when the sticky model maps to the LongCat platform (determined via DB lookup):
 
 ```typescript
 const preferredModel = /* existing logic */;
-const preferredKeyId = preferredModel ? getStickyKey(normalizedMessages, routingMode) : undefined;
+let preferredKeyId: number | undefined;
+if (preferredModel) {
+  const stickyKey = getStickyKey(normalizedMessages, routingMode);
+  if (stickyKey !== undefined) {
+    const modelRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
+    if (modelRow?.platform === 'longcat') {
+      preferredKeyId = stickyKey;
+    }
+  }
+}
 
 // In the routeRequest call:
 route = routeRequest(
@@ -227,18 +248,23 @@ sequenceDiagram
 
     Proxy->>Router: routeRequest(..., preferredKeyId=42)
     Router->>LongCat: Request with key 42
-    
-    alt Auth error (401/403)
+
+    alt Auth error (401/403) — retryable
         LongCat->>Router: 401 Unauthorized
         Router->>Proxy: Error thrown
-        Proxy->>Proxy: clearStickyModel() — removes model + key
-        Proxy->>Client: 502 error
-        Note over Proxy: Next request: no sticky key → normal routing
+        Proxy->>Proxy: clearStickyKey() — removes sticky entry, unsets preferredKeyId
+        Proxy->>Proxy: skipKeys.add(keyId) — retry with different key/model
+        Note over Proxy: Retry continues with round-robin (no sticky key pinned)
     else Rate limit (429)
         LongCat->>Router: 429 Too Many Requests
         Router->>Proxy: Error thrown
         Proxy->>Proxy: skipKeys.add(keyId) — retry with different key
         Note over Proxy: Sticky key preserved for next request
+    else Non-retryable error
+        LongCat->>Router: 500 Internal Server Error
+        Router->>Proxy: Error thrown
+        Proxy->>Proxy: clearStickyModel() — removes model + key
+        Proxy->>Client: 502 error
     else Key not found (disabled/deleted)
         Router->>Router: preferredKeyId not in keys list
         Router->>Router: Fall back to round-robin
@@ -249,32 +275,7 @@ sequenceDiagram
 
 ## Provider-Specific Gating
 
-The sticky key is only passed to the router when the sticky session's model belongs to LongCat. This is determined in the proxy layer:
-
-```typescript
-// In handleChatCompletion, after getting preferredModel:
-const preferredKeyId = (preferredModel && isLongCatModel(preferredModel))
-  ? getStickyKey(normalizedMessages, routingMode)
-  : undefined;
-```
-
-Where `isLongCatModel()` checks if the model DB ID maps to the LongCat platform. This can be done by looking up the model in the database, or more simply by checking the `route.platform` after routing. However, since we need the key *before* routing (to pass it to `routeRequest`), we need a DB lookup or a simpler approach.
-
-**Simpler approach**: Always call `getStickyKey()` when there's a sticky model, but only pass it to `routeRequest()` if the routed result is LongCat. If the routed result is not LongCat, we simply don't use the preferred key. This avoids the pre-routing DB lookup:
-
-```typescript
-// Always get sticky key if session exists
-const preferredKeyId = preferredModel ? getStickyKey(normalizedMessages, routingMode) : undefined;
-
-// Pass to router — router will only use it if the model matches
-route = routeRequest(..., preferredKeyId);
-```
-
-Actually, the cleanest approach is to always pass `preferredKeyId` to the router. The router doesn't need to know about providers — it just tries to use the key if it's available for the selected model. If the selected model is not LongCat, the key ID won't match any key in the model's key list (since keys are per-platform), so it naturally falls through to round-robin. **No provider-specific gating needed in the router.**
-
-Wait — that's not quite right. The key ID is a global ID from the `api_keys` table. A LongCat key ID could coincidentally match a key ID from a different platform. To be safe, we should only pass `preferredKeyId` when we know the sticky model is LongCat.
-
-**Final approach**: Look up the platform for the `preferredModel` from the database, and only pass `preferredKeyId` if the platform is `longcat`:
+The sticky key is only passed to the router when the sticky session's model belongs to LongCat. This is determined in the proxy layer via a DB lookup:
 
 ```typescript
 let preferredKeyId: number | undefined;
@@ -314,7 +315,7 @@ Example log lines:
 | Second request (sticky session exists) | Passes preferred key → router uses it if available. |
 | Key disabled/deleted | Router can't find key → round-robin fallback. New key stored on success. |
 | Key on cooldown (429) | Router skips key → round-robin fallback. Sticky key preserved for next request. |
-| Key auth error (401/403) | `clearStickyModel()` removes entry. No sticky key on next request. |
+| Key auth error (401/403) | `clearStickyKey()` removes sticky entry, `preferredKeyId` unset. Retry continues with round-robin. On success, new key stored. |
 | Session expires (30 min TTL) | Entry deleted on next lookup → normal routing. New entry created on success. |
 | Non-LongCat model sticky session | `preferredKeyId` is `undefined` → normal round-robin. Key ID stored but never used. |
 | Map size exceeds 500 | Existing eviction logic removes expired entries. Same as before. |
