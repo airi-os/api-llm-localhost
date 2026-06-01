@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vite
 import type { Express } from 'express';
 import { createApp } from '../../app.js';
 import { initDb, getDb, getUnifiedApiKey } from '../../db/index.js';
+import { stickySessionMap, getSessionKey } from '../../routes/proxy.js';
 
 async function request(app: Express, method: string, path: string, body?: any) {
   const server = app.listen(0);
@@ -797,5 +798,338 @@ describe('Proxy tool-calling support', () => {
       tool_call_id: 'call_transcribe_replay',
       content: 'Transcript text.',
     });
+  });
+});
+
+describe('LongCat sticky session cooldown', () => {
+  let app: Express;
+
+  beforeAll(() => {
+    process.env.ENCRYPTION_KEY = '0'.repeat(64);
+    initDb(':memory:');
+    app = createApp();
+  });
+
+  beforeEach(() => {
+    (stickySessionMap as Map<any, any>).clear();
+    const db = getDb();
+    db.prepare('DELETE FROM api_keys').run();
+    db.prepare('DELETE FROM requests').run();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const makeMessages = (content: string) => [{ role: 'user' as const, content }];
+
+  it('suppresses sticky preference when LongCat cooldown is active', async () => {
+    const db = getDb();
+    const longcatRow = db.prepare('SELECT id FROM models WHERE platform = ? AND enabled = 1').get('longcat') as { id: number } | undefined;
+    expect(longcatRow).toBeDefined();
+
+    // Set up sticky session on LongCat with recent lastUsed (within 3 min cooldown)
+    const messages = makeMessages('cooldown active test');
+    const key = getSessionKey(messages, 'balanced');
+    (stickySessionMap as Map<any, any>).set(key, {
+      modelDbId: longcatRow!.id,
+      lastUsed: Date.now() - 1000, // 1 second ago — within cooldown
+    });
+
+    // Add API keys via proper endpoint (encrypts correctly) so routing can succeed
+    await request(app, 'POST', '/api/keys', {
+      platform: 'longcat',
+      key: 'lc_cooldown_active_test',
+      label: 'cooldown-active-longcat',
+    });
+    await request(app, 'POST', '/api/keys', {
+      platform: 'groq',
+      key: 'gsk_cooldown_active_test',
+      label: 'cooldown-active-groq',
+    });
+
+    const logSpy = vi.spyOn(console, 'log');
+    const origFetch = global.fetch;
+
+    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
+        return origFetch(url, init);
+      }
+      if (!urlStr.includes('/chat/completions')) return origFetch(url, init);
+
+      const body = JSON.parse((init as any).body);
+      return {
+        ok: true,
+        json: () => Promise.resolve({
+          id: 'chatcmpl-cooldown-active',
+          object: 'chat.completion',
+          created: 123,
+          model: body.model,
+          choices: [{
+            index: 0,
+            message: { role: 'assistant', content: 'cooldown active test response' },
+            finish_reason: 'stop',
+          }],
+          usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+        }),
+      } as any;
+    });
+
+    const { status } = await request(app, 'POST', '/v1/chat/completions', {
+      messages,
+    });
+
+    expect(status).toBe(200);
+    // Cooldown should have triggered and logged the bypass message
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[Sticky] LongCat cooldown active')
+    );
+  });
+
+  it('preserves sticky preference when LongCat cooldown has expired', async () => {
+    const db = getDb();
+    const longcatRow = db.prepare('SELECT id FROM models WHERE platform = ? AND enabled = 1').get('longcat') as { id: number } | undefined;
+    expect(longcatRow).toBeDefined();
+
+    // Set up sticky session on LongCat with old lastUsed (beyond 3 min cooldown)
+    const messages = makeMessages('cooldown expired test');
+    const key = getSessionKey(messages, 'balanced');
+    (stickySessionMap as Map<any, any>).set(key, {
+      modelDbId: longcatRow!.id,
+      lastUsed: Date.now() - 4 * 60 * 1000, // 4 minutes ago — cooldown expired
+    });
+
+    // Add LongCat API key via proper endpoint (encrypts correctly) so routing to LongCat can succeed
+    await request(app, 'POST', '/api/keys', {
+      platform: 'longcat',
+      key: 'lc_cooldown_expired_test',
+      label: 'cooldown-expired-longcat',
+    });
+    await request(app, 'POST', '/api/keys', {
+      platform: 'groq',
+      key: 'gsk_cooldown_expired_test',
+      label: 'cooldown-expired-groq',
+    });
+
+    const logSpy = vi.spyOn(console, 'log');
+    const origFetch = global.fetch;
+    let routedToLongcat = false;
+
+    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
+        return origFetch(url, init);
+      }
+      if (!urlStr.includes('/chat/completions')) return origFetch(url, init);
+
+      if (urlStr.includes('longcat')) routedToLongcat = true;
+
+      const body = JSON.parse((init as any).body);
+      return {
+        ok: true,
+        json: () => Promise.resolve({
+          id: 'chatcmpl-cooldown-expired',
+          object: 'chat.completion',
+          created: 123,
+          model: body.model,
+          choices: [{
+            index: 0,
+            message: { role: 'assistant', content: 'cooldown expired test response' },
+            finish_reason: 'stop',
+          }],
+          usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+        }),
+      } as any;
+    });
+
+    const { status } = await request(app, 'POST', '/v1/chat/completions', {
+      messages,
+    });
+
+    expect(status).toBe(200);
+    // No cooldown message should appear — cooldown expired
+    expect(logSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining('[Sticky] LongCat cooldown active')
+    );
+    // Sticky preference preserved — should route to LongCat
+    expect(routedToLongcat).toBe(true);
+  });
+
+  it('does not apply cooldown for non-LongCat sticky sessions', async () => {
+    const db = getDb();
+    const groqRow = db.prepare('SELECT id FROM models WHERE platform = ? AND enabled = 1 LIMIT 1').get('groq') as { id: number } | undefined;
+    expect(groqRow).toBeDefined();
+
+    // Set up sticky session on Groq with recent lastUsed (would be within cooldown if LongCat)
+    const messages = makeMessages('non longcat cooldown test');
+    const key = getSessionKey(messages, 'balanced');
+    (stickySessionMap as Map<any, any>).set(key, {
+      modelDbId: groqRow!.id,
+      lastUsed: Date.now() - 1000, // 1 second ago
+    });
+
+    // Add Groq API key
+    await request(app, 'POST', '/api/keys', {
+      platform: 'groq',
+      key: 'gsk_non_longcat_test',
+      label: 'non-longcat-test',
+    });
+
+    const logSpy = vi.spyOn(console, 'log');
+    const origFetch = global.fetch;
+    let routedToGroq = false;
+
+    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
+        return origFetch(url, init);
+      }
+      if (!urlStr.includes('/chat/completions')) return origFetch(url, init);
+
+      if (urlStr.includes('groq')) routedToGroq = true;
+
+      const body = JSON.parse((init as any).body);
+      return {
+        ok: true,
+        json: () => Promise.resolve({
+          id: 'chatcmpl-non-longcat',
+          object: 'chat.completion',
+          created: 123,
+          model: body.model,
+          choices: [{
+            index: 0,
+            message: { role: 'assistant', content: 'non-longcat test response' },
+            finish_reason: 'stop',
+          }],
+          usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+        }),
+      } as any;
+    });
+
+    const { status } = await request(app, 'POST', '/v1/chat/completions', {
+      messages,
+    });
+
+    expect(status).toBe(200);
+    // No cooldown message for non-LongCat provider
+    expect(logSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining('[Sticky] LongCat cooldown active')
+    );
+    // Sticky preference preserved — should route to Groq
+    expect(routedToGroq).toBe(true);
+  });
+
+  it('ban takes precedence over cooldown — no cooldown log when banned', async () => {
+    const db = getDb();
+    const longcatRow = db.prepare('SELECT id FROM models WHERE platform = ? AND enabled = 1').get('longcat') as { id: number } | undefined;
+    expect(longcatRow).toBeDefined();
+
+    // Set up sticky session on LongCat with recent lastUsed AND LongCat banned
+    const messages = makeMessages('ban precedence test');
+    const key = getSessionKey(messages, 'balanced');
+    (stickySessionMap as Map<any, any>).set(key, {
+      modelDbId: longcatRow!.id,
+      lastUsed: Date.now() - 1000, // within cooldown window
+      bannedPlatforms: new Set(['longcat']),
+    });
+
+    // Add Groq key as fallback (LongCat is banned for this session)
+    await request(app, 'POST', '/api/keys', {
+      platform: 'groq',
+      key: 'gsk_ban_precedence_test',
+      label: 'ban-precedence-groq',
+    });
+
+    const logSpy = vi.spyOn(console, 'log');
+    const origFetch = global.fetch;
+
+    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
+        return origFetch(url, init);
+      }
+      if (!urlStr.includes('/chat/completions')) return origFetch(url, init);
+
+      const body = JSON.parse((init as any).body);
+      return {
+        ok: true,
+        json: () => Promise.resolve({
+          id: 'chatcmpl-ban-precedence',
+          object: 'chat.completion',
+          created: 123,
+          model: body.model,
+          choices: [{
+            index: 0,
+            message: { role: 'assistant', content: 'ban precedence test response' },
+            finish_reason: 'stop',
+          }],
+          usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+        }),
+      } as any;
+    });
+
+    const { status } = await request(app, 'POST', '/v1/chat/completions', {
+      messages,
+    });
+
+    expect(status).toBe(200);
+    // Ban message should appear (ban clears preferredModel before cooldown check)
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining('banned for session')
+    );
+    // No cooldown message — ban took precedence and cleared preferredModel first
+    expect(logSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining('[Sticky] LongCat cooldown active')
+    );
+  });
+
+  it('no effect when no sticky session exists', async () => {
+    // No sticky session set up — map is cleared in beforeEach
+
+    // Add a Groq key so routing can succeed
+    await request(app, 'POST', '/api/keys', {
+      platform: 'groq',
+      key: 'gsk_no_session_test',
+      label: 'no-session-test',
+    });
+
+    const logSpy = vi.spyOn(console, 'log');
+    const origFetch = global.fetch;
+
+    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
+        return origFetch(url, init);
+      }
+      if (!urlStr.includes('/chat/completions')) return origFetch(url, init);
+
+      const body = JSON.parse((init as any).body);
+      return {
+        ok: true,
+        json: () => Promise.resolve({
+          id: 'chatcmpl-no-session',
+          object: 'chat.completion',
+          created: 123,
+          model: body.model,
+          choices: [{
+            index: 0,
+            message: { role: 'assistant', content: 'no session test response' },
+            finish_reason: 'stop',
+          }],
+          usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+        }),
+      } as any;
+    });
+
+    const { status } = await request(app, 'POST', '/v1/chat/completions', {
+      messages: makeMessages('no sticky session test'),
+    });
+
+    expect(status).toBe(200);
+    // No cooldown message should appear — no sticky session to check
+    expect(logSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining('[Sticky] LongCat cooldown active')
+    );
   });
 });

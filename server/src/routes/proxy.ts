@@ -15,6 +15,7 @@ export const proxyRouter: Router = Router();
 // This prevents model switching mid-conversation which causes hallucination
 const stickySessionMap = new Map<string, { modelDbId: number; keyId?: number; bannedPlatforms?: Set<string>; consecutiveFailures?: Map<string, number>; lastUsed: number }>();
 const STICKY_TTL_MS = 30 * 60 * 1000; // 30 min session TTL
+const LONGCAT_STICKY_COOLDOWN_MS = 3 * 60 * 1000; // 3 min — bypass sticky preference for LongCat if session was used within this window
 const responseSessionMap = new Map<string, { messages: ChatMessage[]; lastUsed: number }>();
 const responseItemMap = new Map<string, ChatMessage>();
 const RESPONSE_SESSION_TTL_MS = 30 * 60 * 1000;
@@ -1236,6 +1237,24 @@ async function handleChatCompletion(
       console.log(`[Sticky] skipping preferredModel=${preferredModel} (${prefRow.platform} banned for session)`);
       preferredModel = undefined;
       preferredKeyId = undefined;
+    }
+  }
+
+  // LongCat sticky cooldown: if the sticky model is on LongCat and was used
+  // within the last 3 minutes, bypass sticky preference for this request only.
+  // The bandit router picks freely — it may still route to LongCat organically.
+  if (preferredModel) {
+    const db = getDb();
+    const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
+    if (prefRow?.platform === 'longcat') {
+      const cooldownSessionKey = getSessionKey(normalizedMessages, routingMode);
+      const cooldownEntry = cooldownSessionKey ? stickySessionMap.get(cooldownSessionKey) : undefined;
+      if (cooldownEntry && Date.now() - cooldownEntry.lastUsed < LONGCAT_STICKY_COOLDOWN_MS) {
+        const ageMs = Date.now() - cooldownEntry.lastUsed;
+        console.log(`[Sticky] LongCat cooldown active — bypassing sticky preference for session=${cooldownSessionKey?.slice(0, 8)} | lastUsed=${ageMs}ms ago`);
+        preferredModel = undefined;
+        preferredKeyId = undefined;
+      }
     }
   }
 
