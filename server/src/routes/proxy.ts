@@ -13,7 +13,7 @@ export const proxyRouter: Router = Router();
 // Sticky sessions: track which model served each "session"
 // Key: hash of first user message → model_db_id
 // This prevents model switching mid-conversation which causes hallucination
-const stickySessionMap = new Map<string, { modelDbId: number; lastUsed: number }>();
+const stickySessionMap = new Map<string, { modelDbId: number; keyId?: number; lastUsed: number }>();
 const STICKY_TTL_MS = 30 * 60 * 1000; // 30 min session TTL
 const responseSessionMap = new Map<string, { messages: ChatMessage[]; lastUsed: number }>();
 const responseItemMap = new Map<string, ChatMessage>();
@@ -51,6 +51,24 @@ function getStickyModel(messages: ChatMessage[], routingMode: RoutingMode): numb
   return entry.modelDbId;
 }
 
+function getStickyKey(messages: ChatMessage[], routingMode: RoutingMode): number | undefined {
+  const key = getSessionKey(messages, routingMode);
+  if (!key) return undefined;
+
+  const entry = stickySessionMap.get(key);
+  if (!entry) return undefined;
+
+  if (Date.now() - entry.lastUsed > STICKY_TTL_MS) {
+    stickySessionMap.delete(key);
+    return undefined;
+  }
+
+  if (entry.keyId) {
+    console.log(`[Sticky] key hit session=${key.slice(0, 8)} → keyId=${entry.keyId}`);
+  }
+  return entry.keyId;
+}
+
 function clearStickyModel(messages: ChatMessage[], routingMode: RoutingMode) {
   const key = getSessionKey(messages, routingMode);
   if (!key) return;
@@ -59,11 +77,11 @@ function clearStickyModel(messages: ChatMessage[], routingMode: RoutingMode) {
   console.log(`[Sticky] cleared key=${key.slice(0, 8)} | msgs=${messages.length} → non-retryable error`);
 }
 
-function setStickyModel(messages: ChatMessage[], modelDbId: number, routingMode: RoutingMode) {
+function setStickyModel(messages: ChatMessage[], modelDbId: number, routingMode: RoutingMode, keyId?: number) {
   const key = getSessionKey(messages, routingMode);
   if (!key) return;
-  stickySessionMap.set(key, { modelDbId, lastUsed: Date.now() });
-  console.log(`[Sticky] set key=${key.slice(0, 8)} | msgs=${messages.length} → modelDbId=${modelDbId}`);
+  stickySessionMap.set(key, { modelDbId, keyId, lastUsed: Date.now() });
+  console.log(`[Sticky] set key=${key.slice(0, 8)} | msgs=${messages.length} → modelDbId=${modelDbId}${keyId ? ` keyId=${keyId}` : ''}`);
 
   if (stickySessionMap.size > 500) {
     const now = Date.now();
@@ -998,6 +1016,22 @@ async function handleChatCompletion(
     preferredModel = getStickyModel(normalizedMessages, routingMode);
   }
 
+  // Sticky key: prefer the same API key within a LongCat session for
+  // session continuity on the provider side. Only pass preferredKeyId
+  // when the sticky model maps to the LongCat platform.
+  let preferredKeyId: number | undefined;
+  if (preferredModel) {
+    const stickyKeyId = getStickyKey(normalizedMessages, routingMode);
+    if (stickyKeyId) {
+      const db = getDb();
+      const row = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
+      if (row?.platform === 'longcat') {
+        preferredKeyId = stickyKeyId;
+        console.log(`[Sticky] key preferred modelDbId=${preferredModel} keyId=${preferredKeyId} (longcat)`);
+      }
+    }
+  }
+
   // Retry loop: skip bad keys and, for non-rate-limit errors, skip the model
   // entirely so the fallback chain can move to a different provider/model.
   const skipKeys = new Set<string>();
@@ -1013,6 +1047,7 @@ async function handleChatCompletion(
         preferredModel,
         routingMode,
         skipModels.size > 0 ? skipModels : undefined,
+        preferredKeyId,
       );
     } catch (err: any) {
       // No more models available
@@ -1124,7 +1159,7 @@ async function handleChatCompletion(
 
           recordTokens(route.platform, route.modelId, route.keyId, estimatedInputTokens + totalOutputTokens);
           recordSuccess(route.modelDbId);
-          setStickyModel(normalizedMessages, route.modelDbId, routingMode);
+          setStickyModel(normalizedMessages, route.modelDbId, routingMode, route.keyId);
           logRequest(route.platform, route.modelId, 'success', estimatedInputTokens, totalOutputTokens, Date.now() - start, ttfbMs, null);
           return;
         } catch (streamErr: any) {
@@ -1171,7 +1206,7 @@ async function handleChatCompletion(
         const totalTokens = result.usage?.total_tokens ?? 0;
         recordTokens(route.platform, route.modelId, route.keyId, totalTokens);
         recordSuccess(route.modelDbId);
-        setStickyModel(normalizedMessages, route.modelDbId, routingMode);
+        setStickyModel(normalizedMessages, route.modelDbId, routingMode, route.keyId);
 
         res.setHeader('X-Routed-Via', `${route.platform}/${route.modelId}`);
         if (attempt > 0) res.setHeader('X-Fallback-Attempts', String(attempt));
