@@ -32,7 +32,7 @@
   - Add after `addLongcatModelsToSkipModels()`
   - Parameters: `errOrContent: any`
   - Returns `boolean` — checks for truncation keywords in stringified input
-  - Keywords: 'truncated', 'truncation', 'conflict', 'context_length_exceeded', 'token_limit', 'maximum length', 'response_length_limit'
+  - Keywords: 'truncated', 'truncation'
   - Case-insensitive matching
 
 - [x] 6. Update `getStickyKey()` to check session bans

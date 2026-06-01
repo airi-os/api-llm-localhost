@@ -130,12 +130,6 @@ function isTruncatedResponse(errOrContent: any): boolean {
   // Truncation indicators from LongCat and similar providers
   return str.includes('truncated')
     || str.includes('truncation')
-    || str.includes('conflict')
-    || str.includes('context_length_exceeded')
-    || str.includes('token_limit')
-    || str.includes('maximum length')
-    || str.includes('response_length_limit');
-}
 ```
 
 ## Component Changes
