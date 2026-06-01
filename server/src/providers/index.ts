@@ -144,7 +144,7 @@ register(new OpenAICompatProvider({
   baseUrl: 'https://api.inceptionlabs.ai/v1',
 }));
 
-// LongCat — OpenAI-compatible. Free tier model (longcat-2.0-preview).
+// LongCat — OpenAI-compatible. Free tier model (LongCat-2.0-Preview).
 register(new OpenAICompatProvider({
   platform: 'longcat',
   name: 'LongCat',

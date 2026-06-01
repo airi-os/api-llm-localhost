@@ -1063,10 +1063,10 @@ function migrateModelsV16(db: Database.Database) {
     INSERT OR IGNORE INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, size_label, rpm_limit, rpd_limit, tpm_limit, tpd_limit, monthly_token_budget, context_window)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  // longcat-2.0-preview: LongCat's free frontier model, same architecture as Owl Alpha.
+  // longcat-2.0-preview: LongCat's free frontier model, suspected to be same model as Owl Alpha.
   // 1M+ context, strong agentic capabilities.
   const additions: Array<[string, string, string, number, number, string, number | null, number | null, number | null, number | null, string, number | null]> = [
-    ['longcat', 'longcat/longcat-2.0-preview', 'LongCat 2.0 Preview (free)', 6, 7, 'Frontier', 20, 200, null, null, '~6M', 1048576],
+    ['longcat', 'LongCat-2.0-Preview', 'LongCat 2.0 Preview (free)', 6, 7, 'Frontier', 20, 200, null, null, '~6M', 1048576],
   ];
   const apply = db.transaction(() => {
     for (const a of additions) insert.run(...a);
