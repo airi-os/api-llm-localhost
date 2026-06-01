@@ -453,6 +453,7 @@ export function getAllPenalties(): Array<{ modelDbId: number; count: number; pen
  * @param skipKeys - "platform:modelId:keyId" triples to skip (already failed this request)
  * @param preferredModelDbId - pin this model to position 0 (sticky session)
  * @param routingMode - balanced optimizes success+latency; smart adds intelligence priority
+ * @param preferredKeyId - prefer this API key within the model (sticky key for LongCat)
  */
 export function routeRequest(
   estimatedTokens = 1000,
@@ -460,6 +461,7 @@ export function routeRequest(
   preferredModelDbId?: number,
   routingMode: RoutingMode = 'balanced',
   skipModels?: Set<number>,
+  preferredKeyId?: number,
 ): RouteResult {
   const db = getDb();
 
@@ -493,6 +495,37 @@ export function routeRequest(
       - getPenalty(entry.model_db_id) * PENALTY_SCORE_WEIGHT,
   })).sort((a, b) => b.effectiveScore - a.effectiveScore);
 
+  // LongCat preference in smart mode: move LongCat entries to front if any key has capacity
+  if (routingMode === 'smart') {
+    const longcatEntries = sorted.filter(e => e.platform === 'longcat');
+    if (longcatEntries.length > 0) {
+      // Check if any LongCat key passes rate-limit checks
+      const lcKeys = db.prepare(
+        'SELECT * FROM api_keys WHERE platform = ? AND enabled = 1 AND status != ?'
+      ).all('longcat', 'invalid') as KeyRow[];
+      if (lcKeys.length > 0) {
+        const sampleEntry = longcatEntries[0];
+        const lcLimits = {
+          rpm: sampleEntry.rpm_limit,
+          rpd: sampleEntry.rpd_limit,
+          tpm: sampleEntry.tpm_limit,
+          tpd: sampleEntry.tpd_limit,
+        };
+        const hasCapacity = lcKeys.some(key =>
+          !isOnCooldown(sampleEntry.platform, sampleEntry.model_id, key.id) &&
+          canMakeRequest(sampleEntry.platform, sampleEntry.model_id, key.id, lcLimits) &&
+          canUseTokens(sampleEntry.platform, sampleEntry.model_id, key.id, estimatedTokens, lcLimits)
+        );
+        if (hasCapacity) {
+          // Move all LongCat entries to front, preserving relative score order
+          const others = sorted.filter(e => e.platform !== 'longcat');
+          sorted.length = 0;
+          sorted.push(...longcatEntries, ...others);
+        }
+      }
+    }
+  }
+
   // Sticky session: force preferred model to the front regardless of score
   if (preferredModelDbId) {
     const idx = sorted.findIndex(e => e.model_db_id === preferredModelDbId);
@@ -524,6 +557,31 @@ export function routeRequest(
     const rrKey = `${entry.platform}:${entry.model_id}`;
     let idx = roundRobinIndex.get(rrKey) ?? 0;
     let exhaustedBy429 = false;
+
+    // Sticky key: try the preferred key first before round-robin
+    if (preferredKeyId) {
+      const preferredKey = keys.find(k => k.id === preferredKeyId);
+      if (preferredKey) {
+        const skipId = `${entry.platform}:${entry.model_id}:${preferredKey.id}`;
+        const isSkipped = skipKeys?.has(skipId);
+        const isCooling = isOnCooldown(entry.platform, entry.model_id, preferredKey.id);
+        const canRequest = canMakeRequest(entry.platform, entry.model_id, preferredKey.id, limits);
+        const canTokens = canUseTokens(entry.platform, entry.model_id, preferredKey.id, estimatedTokens, limits);
+        if (!isSkipped && !isCooling && canRequest && canTokens) {
+          const decryptedKey = decrypt(preferredKey.encrypted_key, preferredKey.iv, preferredKey.auth_tag);
+          console.log(`[Router] sticky key preferredKeyId=${preferredKeyId} platform=${entry.platform} model=${entry.model_id}`);
+          return {
+            provider,
+            modelId: entry.model_id,
+            modelDbId: entry.model_db_id,
+            apiKey: decryptedKey,
+            keyId: preferredKey.id,
+            platform: entry.platform,
+            displayName: entry.display_name,
+          };
+        }
+      }
+    }
 
     for (let attempt = 0; attempt < keys.length; attempt++) {
       const key = keys[idx % keys.length];
