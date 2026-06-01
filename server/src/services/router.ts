@@ -536,7 +536,7 @@ export function routeRequest(
   }
 
   for (const entry of sorted) {
-    if (skipModels?.has(entry.model_db_id)) continue;
+    if (skipModels?.has(entry.model_db_id) && entry.model_db_id !== preferredModelDbId) continue;
 
     const provider = getProvider(entry.platform as any);
     if (!provider) continue;

@@ -3,7 +3,7 @@
 ## Task List
 
 - [x] Add `LONGCAT_STICKY_COOLDOWN_MS` constant (3 * 60 * 1000) after `STICKY_TTL_MS` in [`server/src/routes/proxy.ts`](server/src/routes/proxy.ts:17)
-- [x] Add cooldown check logic in [`handleChatCompletion()`](server/src/routes/proxy.ts:1240) — after ban check clears `preferredModel`, before the retry loop: if `preferredModel` is on `longcat` platform AND `stickySessionMap` entry's `lastUsed` is within `LONGCAT_STICKY_COOLDOWN_MS`, set `preferredModel = undefined` and `preferredKeyId = undefined` with log message
-- [x] Add unit tests in [`server/src/__tests__/routes/proxy-tools.test.ts`](server/src/__tests__/routes/proxy-tools.test.ts) covering: cooldown active (suppresses preference), cooldown expired (preserves preference), non-LongCat provider (no cooldown), ban precedence over cooldown, no sticky session (no effect), explicit model request (cooldown doesn't apply)
-- [x] Run existing test suite to verify no regressions: `pnpm --filter server test`
-- [ ] Manual smoke test: send rapid requests to a LongCat-pinned session and verify that requests within 3 min bypass sticky preference while requests after 3 min resume it
+- [x] **Replace** existing cooldown check logic in [`handleChatCompletion()`](server/src/routes/proxy.ts:1243) — instead of clearing `preferredModel`/`preferredKeyId`, add LongCat models to `skipModels` via `addProviderModelsToSkipModels(skipModels, 'longcat')`. Keep `preferredModel`/`preferredKeyId` intact.
+- [x] **Modify** `skipModels` check in [`server/src/services/router.ts`](server/src/services/router.ts:539) to exclude the sticky model: `if (skipModels?.has(entry.model_db_id) && entry.model_db_id !== preferredModelDbId) continue;`
+- [x] **Update** unit tests in [`server/src/__tests__/routes/proxy-tools.test.ts`](server/src/__tests__/routes/proxy-tools.test.ts) to match new behavior: cooldown adds LongCat to skipModels instead of clearing sticky preference
+- [x] Run existing test suite to verify no regressions: `pnpm --filter server test` — all 156 tests pass

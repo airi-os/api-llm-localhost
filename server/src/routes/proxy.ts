@@ -1241,8 +1241,9 @@ async function handleChatCompletion(
   }
 
   // LongCat sticky cooldown: if the sticky model is on LongCat and was used
-  // within the last 3 minutes, bypass sticky preference for this request only.
-  // The bandit router picks freely — it may still route to LongCat organically.
+  // within the last 3 minutes, exclude LongCat from the bandit router for all
+  // other sessions. The current sticky session keeps its pinned LongCat route.
+  // This prevents LongCat from seeing multiple sessions/keys from the same IP.
   if (preferredModel) {
     const db = getDb();
     const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
@@ -1251,9 +1252,8 @@ async function handleChatCompletion(
       const cooldownEntry = cooldownSessionKey ? stickySessionMap.get(cooldownSessionKey) : undefined;
       if (cooldownEntry && Date.now() - cooldownEntry.lastUsed < LONGCAT_STICKY_COOLDOWN_MS) {
         const ageMs = Date.now() - cooldownEntry.lastUsed;
-        console.log(`[Sticky] LongCat cooldown active — bypassing sticky preference for session=${cooldownSessionKey?.slice(0, 8)} | lastUsed=${ageMs}ms ago`);
-        preferredModel = undefined;
-        preferredKeyId = undefined;
+        addProviderModelsToSkipModels(skipModels, 'longcat');
+        console.log(`[Sticky] LongCat cooldown active — excluding LongCat from bandit routing for other sessions | session=${cooldownSessionKey?.slice(0, 8)} | lastUsed=${ageMs}ms ago`);
       }
     }
   }

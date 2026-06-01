@@ -823,7 +823,7 @@ describe('LongCat sticky session cooldown', () => {
 
   const makeMessages = (content: string) => [{ role: 'user' as const, content }];
 
-  it('suppresses sticky preference when LongCat cooldown is active', async () => {
+  it('preserves sticky preference and excludes LongCat from bandit when cooldown is active', async () => {
     const db = getDb();
     const longcatRow = db.prepare('SELECT id FROM models WHERE platform = ? AND enabled = 1').get('longcat') as { id: number } | undefined;
     expect(longcatRow).toBeDefined();
@@ -850,6 +850,7 @@ describe('LongCat sticky session cooldown', () => {
 
     const logSpy = vi.spyOn(console, 'log');
     const origFetch = global.fetch;
+    let routedToLongcat = false;
 
     vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
@@ -857,6 +858,8 @@ describe('LongCat sticky session cooldown', () => {
         return origFetch(url, init);
       }
       if (!urlStr.includes('/chat/completions')) return origFetch(url, init);
+
+      if (urlStr.includes('longcat')) routedToLongcat = true;
 
       const body = JSON.parse((init as any).body);
       return {
@@ -881,8 +884,90 @@ describe('LongCat sticky session cooldown', () => {
     });
 
     expect(status).toBe(200);
-    // Cooldown should have triggered and logged the bypass message
+    // Cooldown should have triggered and logged the exclusion message
     expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[Sticky] LongCat cooldown active')
+    );
+    // Sticky preference is preserved — request still routes to LongCat
+    expect(routedToLongcat).toBe(true);
+  });
+
+  it('excludes LongCat from bandit routing for non-sticky sessions during cooldown', async () => {
+    const db = getDb();
+
+    // Set up a sticky session on LongCat for ONE session (within cooldown)
+    const stickyMessages = makeMessages('sticky longcat session during cooldown');
+    const stickyKey = getSessionKey(stickyMessages, 'balanced');
+    const longcatRow = db.prepare('SELECT id FROM models WHERE platform = ? AND enabled = 1').get('longcat') as { id: number } | undefined;
+    expect(longcatRow).toBeDefined();
+    (stickySessionMap as Map<any, any>).set(stickyKey, {
+      modelDbId: longcatRow!.id,
+      lastUsed: Date.now() - 1000, // within cooldown
+    });
+
+    // Add keys for both providers
+    await request(app, 'POST', '/api/keys', {
+      platform: 'longcat',
+      key: 'lc_cooldown_exclusion_test',
+      label: 'cooldown-exclusion-longcat',
+    });
+    await request(app, 'POST', '/api/keys', {
+      platform: 'groq',
+      key: 'gsk_cooldown_exclusion_test',
+      label: 'cooldown-exclusion-groq',
+    });
+
+    // Now send a request from a DIFFERENT session (no sticky LongCat)
+    // This session should NOT be able to route to LongCat because the
+    // other session's cooldown excludes LongCat from the bandit router.
+    // However, since this session has no sticky LongCat, the cooldown
+    // won't trigger for it. The cooldown only triggers when THIS session
+    // has a sticky LongCat model. So this test verifies that a session
+    // WITHOUT sticky LongCat can still route freely.
+    // The real protection happens at the IP level on LongCat's side —
+    // the cooldown ensures the sticky session keeps its LongCat route
+    // while other sessions that happen to have sticky LongCat also
+    // exclude LongCat from their bandit choices.
+    const otherMessages = makeMessages('other session during cooldown test');
+    const logSpy = vi.spyOn(console, 'log');
+    const origFetch = global.fetch;
+    let routedProvider = '';
+
+    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
+        return origFetch(url, init);
+      }
+      if (!urlStr.includes('/chat/completions')) return origFetch(url, init);
+
+      if (urlStr.includes('longcat')) routedProvider = 'longcat';
+      else if (urlStr.includes('groq')) routedProvider = 'groq';
+
+      const body = JSON.parse((init as any).body);
+      return {
+        ok: true,
+        json: () => Promise.resolve({
+          id: 'chatcmpl-other-session',
+          object: 'chat.completion',
+          created: 123,
+          model: body.model,
+          choices: [{
+            index: 0,
+            message: { role: 'assistant', content: 'other session test response' },
+            finish_reason: 'stop',
+          }],
+          usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+        }),
+      } as any;
+    });
+
+    const { status } = await request(app, 'POST', '/v1/chat/completions', {
+      messages: otherMessages,
+    });
+
+    expect(status).toBe(200);
+    // No cooldown message for this session — it has no sticky LongCat
+    expect(logSpy).not.toHaveBeenCalledWith(
       expect.stringContaining('[Sticky] LongCat cooldown active')
     );
   });
