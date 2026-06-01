@@ -200,6 +200,8 @@ function isTruncatedResponse(errOrContent: any): boolean {
   let text: string;
   if (typeof errOrContent === 'string') {
     text = errOrContent;
+  } else if (errOrContent instanceof Error) {
+    text = errOrContent.message;
   } else if (typeof errOrContent === 'object') {
     try { text = JSON.stringify(errOrContent); } catch { return false; }
   } else {
@@ -540,6 +542,10 @@ function isChatToolDefinition(tool: ResponseTool): tool is ChatToolDefinition {
 function getErrorStatus(err: any): number | undefined {
   const status = err?.status ?? err?.response?.status;
   return typeof status === 'number' ? status : undefined;
+}
+
+function isBanEligibleStatus(status: number): boolean {
+  return status === 500 || status === 502 || status === 503 || status === 504;
 }
 
 function getErrorMessage(err: any): string {
@@ -1205,14 +1211,28 @@ async function handleChatCompletion(
     }
   }
 
-  // Check if session is banned from the preferred model's platform — if so,
-  // skip all models of that platform and clear preferredModel/preferredKeyId.
+  // Check if session is banned from any platform — add all banned platforms' models to skipModels
+  // and clear preferredModel/preferredKeyId if it points to a banned platform.
   const skipModels = new Set<number>();
+  const sessionKey = getSessionKey(normalizedMessages, routingMode);
+  if (sessionKey) {
+    const entry = stickySessionMap.get(sessionKey);
+    if (entry) {
+      if (Date.now() - entry.lastUsed > STICKY_TTL_MS) {
+        stickySessionMap.delete(sessionKey);
+      } else if (entry.bannedPlatforms) {
+        for (const platform of entry.bannedPlatforms) {
+          addProviderModelsToSkipModels(skipModels, platform);
+          console.log(`[Sticky] session banned from ${platform}, adding to skipModels`);
+        }
+      }
+    }
+  }
+
   if (preferredModel) {
     const db = getDb();
     const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
     if (prefRow && isSessionBannedFromPlatform(normalizedMessages, routingMode, prefRow.platform)) {
-      addProviderModelsToSkipModels(skipModels, prefRow.platform);
       console.log(`[Sticky] skipping preferredModel=${preferredModel} (${prefRow.platform} banned for session)`);
       preferredModel = undefined;
       preferredKeyId = undefined;
@@ -1364,12 +1384,25 @@ async function handleChatCompletion(
           if (streamStarted) {
             // General 5xx consecutive failure detection for mid-stream errors
             const streamErrStatus = getErrorStatus(streamErr);
-            if (streamErrStatus && streamErrStatus >= 500 && streamErrStatus < 600) {
+            if (streamErrStatus && isBanEligibleStatus(streamErrStatus)) {
               recordConsecutiveFailure(normalizedMessages, routingMode, route.platform, skipModels, route.modelDbId);
             }
-
+  
             // Generalized truncation detection for any provider (not just LongCat)
-            if (isTruncatedResponse(streamErr.message)) {
+            // Aggregate all possible error text sources for comprehensive detection
+            const truncationTexts: string[] = [];
+            if (streamErr instanceof Error) {
+              truncationTexts.push(streamErr.message);
+            }
+            if (streamErr?.response?.data) {
+              truncationTexts.push(typeof streamErr.response.data === 'string' ? streamErr.response.data : JSON.stringify(streamErr.response.data));
+            }
+            if (streamErr?.body) {
+              truncationTexts.push(typeof streamErr.body === 'string' ? streamErr.body : JSON.stringify(streamErr.body));
+            }
+            truncationTexts.push(String(streamErr));
+            const combinedTruncationText = truncationTexts.join(' ');
+            if (isTruncatedResponse(combinedTruncationText)) {
               console.warn(`[Proxy] Truncation error mid-stream from ${route.platform} — banning ${route.platform} for session, ending stream gracefully`);
               banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
               try {
@@ -1457,10 +1490,11 @@ async function handleChatCompletion(
 
       // General 5xx consecutive failure detection — works for any provider
       const errStatus = getErrorStatus(err);
-      if (errStatus && errStatus >= 500 && errStatus < 600) {
+      if (errStatus && isBanEligibleStatus(errStatus)) {
         recordConsecutiveFailure(normalizedMessages, routingMode, route.platform, skipModels, route.modelDbId);
-        // If this provider was just banned, clear preferredModel/preferredKeyId if they point to it
-        if (preferredModel) {
+        // Only clear preferredModel/preferredKeyId if the provider was just banned
+        // (i.e., this was the 2nd consecutive 5xx). Don't clear on the first failure.
+        if (preferredModel && isSessionBannedFromPlatform(normalizedMessages, routingMode, route.platform)) {
           const db = getDb();
           const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
           if (prefRow?.platform === route.platform) {
