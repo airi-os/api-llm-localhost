@@ -1066,7 +1066,7 @@ function migrateModelsV16(db: Database.Database) {
   // longcat-2.0-preview: LongCat's free frontier model, same architecture as Owl Alpha.
   // 1M+ context, strong agentic capabilities.
   const additions: Array<[string, string, string, number, number, string, number | null, number | null, number | null, number | null, string, number | null]> = [
-    ['longcat', 'longcat/longcat-2.0-preview', 'LongCat 2.0 Preview (free)', 6, 7, 'Frontier', 20, 200, null, null, '~6M', 1048756],
+    ['longcat', 'longcat/longcat-2.0-preview', 'LongCat 2.0 Preview (free)', 6, 7, 'Frontier', 20, 200, null, null, '~6M', 1048576],
   ];
   const apply = db.transaction(() => {
     for (const a of additions) insert.run(...a);
