@@ -92,9 +92,9 @@ function clearStickyKey(messages: ChatMessage[], routingMode: RoutingMode) {
   const entry = stickySessionMap.get(key);
   if (!entry) return;
   const clearedKeyId = entry.keyId;
-  const clearedModelDbId = entry.modelDbId;
-  stickySessionMap.delete(key);
-  console.log(`[Sticky] cleared key=${key.slice(0, 8)} | modelDbId=${clearedModelDbId} keyId=${clearedKeyId} → auth error, retrying`);
+  entry.keyId = undefined;
+  stickySessionMap.set(key, entry);
+  console.log(`[Sticky] cleared key=${key.slice(0, 8)} | keyId=${clearedKeyId} → auth error, retrying (modelDbId=${entry.modelDbId} retained)`);
 }
 
 function setStickyModel(messages: ChatMessage[], modelDbId: number, routingMode: RoutingMode, keyId?: number) {
@@ -1040,7 +1040,7 @@ async function handleChatCompletion(
   // session continuity on the provider side. Only pass preferredKeyId
   // when the sticky model maps to the LongCat platform.
   let preferredKeyId: number | undefined;
-  if (preferredModel) {
+  if (preferredModel && !requestedModel) {
     const stickyKeyId = getStickyKey(normalizedMessages, routingMode);
     if (stickyKeyId !== undefined) {
       const db = getDb();
