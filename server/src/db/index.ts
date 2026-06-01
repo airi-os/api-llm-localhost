@@ -1040,7 +1040,7 @@ function migrateModelsV15(db: Database.Database) {
   // openrouter/owl-alpha: OpenRouter's own agentic foundation model, natively free (no :free suffix).
   // 1M context, strong tool-use and code-gen. Weekly budget of 1.25T tokens.
   const additions: Array<[string, string, string, number, number, string, number | null, number | null, number | null, number | null, string, number | null]> = [
-    ['openrouter', 'openrouter/owl-alpha', 'Owl Alpha (free)', 6, 7, 'Frontier', 20, 200, null, null, '~6M', 1048756],
+    ['openrouter', 'openrouter/owl-alpha', 'Owl Alpha (free)', 6, 7, 'Frontier', 20, 200, null, null, '~6M', 1048576],
   ];
   const apply = db.transaction(() => {
     for (const a of additions) insert.run(...a);

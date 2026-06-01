@@ -166,7 +166,7 @@ function migrateModelsV16(db: Database.Database) {
   // longcat-2.0-preview: LongCat's free frontier model, same architecture as Owl Alpha.
   // 1M+ context, strong agentic capabilities.
   const additions: Array<[string, string, string, number, number, string, number | null, number | null, number | null, number | null, string, number | null]> = [
-    ['longcat', 'longcat/longcat-2.0-preview', 'LongCat 2.0 Preview (free)', 6, 7, 'Frontier', 20, 200, null, null, '~6M', 1048756],
+    ['longcat', 'longcat/longcat-2.0-preview', 'LongCat 2.0 Preview (free)', 6, 7, 'Frontier', 20, 200, null, null, '~6M', 1048576],
   ];
   const apply = db.transaction(() => {
     for (const a of additions) insert.run(...a);
@@ -240,7 +240,7 @@ No schema changes. The existing `models` table columns are:
 | `tpm_limit` | INTEGER | `null` |
 | `tpd_limit` | INTEGER | `null` |
 | `monthly_token_budget` | TEXT | `~6M` |
-| `context_window` | INTEGER | `1048756` |
+| `context_window` | INTEGER | `1048576` |
 
 The `fallback_config` table will get one new row auto-populated by the migration:
 - `model_db_id` → the `id` from the new `models` row

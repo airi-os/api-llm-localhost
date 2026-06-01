@@ -31,7 +31,7 @@ Add a new LLM provider called **LongCat** to the freellmapi project. LongCat exp
 | **TPM Limit** | `null` | Same as Owl Alpha |
 | **TPD Limit** | `null` | Same as Owl Alpha |
 | **Monthly Token Budget** | `~6M` | Same as Owl Alpha |
-| **Context Window** | `1048756` | Same as Owl Alpha |
+| **Context Window** | `1048576` | Same as Owl Alpha |
 
 ## Functional Requirements
 
