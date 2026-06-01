@@ -135,6 +135,20 @@ function isTruncatedResponse(errOrContent: any): boolean {
     || str.includes('truncation')
 }
 
+// Exported for testing purposes only
+export {
+  isSessionBannedFromPlatform,
+  banPlatformFromSession,
+  addLongcatModelsToSkipModels,
+  isTruncatedResponse,
+  getSessionKey,
+  getStickyModel,
+  getStickyKey,
+  setStickyModel,
+  clearStickyModel,
+  stickySessionMap,
+};
+
 function clearStickyModel(messages: ChatMessage[], routingMode: RoutingMode) {
   const key = getSessionKey(messages, routingMode);
   if (!key) return;
