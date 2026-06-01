@@ -57,7 +57,7 @@ Extended to:
 { modelDbId: number; keyId?: number; bannedPlatforms?: Set<string>; lastUsed: number }
 ```
 
-The `bannedPlatforms` field is optional for backward compatibility. Existing entries without it default to anundefined` (no bans). Non-LongCat sessions never have bans.
+The `bannedPlatforms` field is optional for backward compatibility. Existing entries without it default to `undefined` (no bans). Non-LongCat sessions never have bans.
 
 ## New Functions
 
@@ -384,10 +384,10 @@ No change needed — the existing boost logic already checks `hasCapacity` by qu
 ```mermaid
 flowchart TD
     ERR[Provider Error] --> TYPE{Error Type?}
-    TYPE --> |Auth 401/403?` --> BAN1[Ban LongCat + Skip LongCat Models + Clear preferredKeyId]
-    TYPE --> `Rate Limit 429?` --> BAN2[Ban LongCat + Skip LongCat Models + Clear preferredKeyId]
-    TYPE --> `Truncated Response?` --> BAN3[Ban LongCat + Skip LongCat Models + Clear preferredKeyId]
-    TYPE --> `Other Error?` --> EXIST[Existing Retry Behavior]
+    TYPE -->|Auth 401/403?| BAN1[Ban LongCat + Skip LongCat Models + Clear preferredKeyId]
+    TYPE -->|Rate Limit 429?| BAN2[Ban LongCat + Skip LongCat Models + Clear preferredKeyId]
+    TYPE -->|Truncated Response?| BAN3[Ban LongCat + Skip LongCat Models + Clear preferredKeyId]
+    TYPE -->|Other Error?| EXIST[Existing Retry Behavior]
 
     BAN1 --> RETRY[Continue Retry Loop - Fall Back to Next Model]
     BAN2 --> RETRY
@@ -395,11 +395,11 @@ flowchart TD
 
     subgraph Stream Detection
         STREAM[Stream Comple] --> CHECK{Check streamedText for Truncation}
-        CHECK -->|Truncated|` BAN4[Ban LongCat + Record for Future Requests]
-        CHECK -->|Not Truncated|` SUCCESS[Normal Success Path]
+        CHECK -->|Truncated| BAN4[Ban LongCat + Record for Future Requests]
+        CHECK -->|Not Truncated| SUCCESS[Normal Success Path]
         MID[Mid-Stream Error] --> CHECK2{Check Error Message for Truncation}
-        CHECK2 -->|Truncated|` BAN5[Ban LongCat + End Stream Gracefully + Return]
-        CHECK2 -->|Not Truncated|` ERRSEND[Send Error SSE Event + Return]
+        CHECK2 -->|Truncated| BAN5[Ban LongCat + End Stream Gracefully + Return]
+        CHECK2 -->|Not Truncated| ERRSEND[Send Error SSE Event + Return]
     end
 ```
 
