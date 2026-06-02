@@ -3,6 +3,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/api'
 import { Switch } from '@/components/ui/switch'
 import { PageHeader } from '@/components/page-header'
+import { PoolSection } from '@/components/pool-section'
+import type { PoolType } from '@/components/pool-badge'
 
 interface FallbackEntry {
   modelDbId: number
@@ -23,6 +25,7 @@ interface FallbackEntry {
   rpdLimit: number | null
   monthlyTokenBudget: string
   keyCount: number
+  pool: PoolType
 }
 
 function formatTokens(n: number): string {
@@ -59,6 +62,13 @@ function sortValue(entry: FallbackEntry, key: SortKey): string | number {
   if (key === 'ttfb') return entry.avgTtfbMs ?? Number.POSITIVE_INFINITY
   if (key === 'smart') return entry.smartScore
   return entry.effectiveScore
+}
+
+const poolOrder: PoolType[] = ['fast', 'balanced', 'smart']
+const poolTitles: Record<PoolType, string> = {
+  fast: 'Fast pool — lowest latency models',
+  balanced: 'Balanced pool — good speed & quality',
+  smart: 'Smart pool — highest intelligence models',
 }
 
 function SortHeader({
@@ -285,6 +295,9 @@ export default function FallbackPage() {
         : Number(aValue) - Number(bValue)
       return sortDir === 'asc' ? result : -result
     })
+  const poolGroups = poolOrder
+    .map(pool => ({ pool, entries: displayEntries.filter(e => e.pool === pool) }))
+    .filter(group => group.entries.length > 0)
   const unconfiguredPlatforms = [...new Set(entries.filter(e => e.keyCount === 0).map(e => e.platform))]
 
   function handleSort(key: SortKey) {
@@ -319,37 +332,43 @@ export default function FallbackPage() {
           </div>
         ) : (
           <>
-            <div className="rounded-lg border overflow-hidden">
-              <div className="flex items-center gap-3 px-4 py-2 bg-muted/40 border-b">
-                <span className="w-5 shrink-0" />
-                <SortHeader
-                  label={sortLabels.model}
-                  sortKey="model"
-                  activeKey={sortKey}
-                  sortDir={sortDir}
-                  onSort={handleSort}
-                  className="flex-1 min-w-0 text-left"
-                />
-                <div className="flex items-center gap-6 shrink-0">
-                  <SortHeader label={sortLabels.requests} sortKey="requests" activeKey={sortKey} sortDir={sortDir} onSort={handleSort} className="w-14 text-right" />
-                  <SortHeader label={sortLabels.success} sortKey="success" activeKey={sortKey} sortDir={sortDir} onSort={handleSort} className="w-20 text-right" />
-                  <SortHeader label={sortLabels.tokPerSec} sortKey="tokPerSec" activeKey={sortKey} sortDir={sortDir} onSort={handleSort} className="w-16 text-right" />
-                  <SortHeader label={sortLabels.ttfb} sortKey="ttfb" activeKey={sortKey} sortDir={sortDir} onSort={handleSort} className="w-20 text-right" />
-                  <SortHeader label={sortLabels.auto} sortKey="auto" activeKey={sortKey} sortDir={sortDir} onSort={handleSort} className="w-16 text-right" />
-                  <SortHeader label={sortLabels.smart} sortKey="smart" activeKey={sortKey} sortDir={sortDir} onSort={handleSort} className="w-16 text-right" />
-                </div>
-                <span className="w-9 shrink-0 text-xs font-medium text-muted-foreground text-right">On</span>
-              </div>
-              <div className="divide-y">
-              {displayEntries.map((entry, index) => (
-                <ModelRow
-                  key={entry.modelDbId}
-                  entry={entry}
-                  index={index}
-                  onToggle={(id, enabled) => toggleMutation.mutate({ modelDbId: id, enabled })}
-                />
+            <div className="space-y-4">
+              {poolGroups.map(({ pool, entries: poolEntries }) => (
+                <PoolSection key={pool} pool={pool} title={poolTitles[pool]}>
+                  <div className="rounded-lg border overflow-hidden">
+                    <div className="flex items-center gap-3 px-4 py-2 bg-muted/40 border-b">
+                      <span className="w-5 shrink-0" />
+                      <SortHeader
+                        label={sortLabels.model}
+                        sortKey="model"
+                        activeKey={sortKey}
+                        sortDir={sortDir}
+                        onSort={handleSort}
+                        className="flex-1 min-w-0 text-left"
+                      />
+                      <div className="flex items-center gap-6 shrink-0">
+                        <SortHeader label={sortLabels.requests} sortKey="requests" activeKey={sortKey} sortDir={sortDir} onSort={handleSort} className="w-14 text-right" />
+                        <SortHeader label={sortLabels.success} sortKey="success" activeKey={sortKey} sortDir={sortDir} onSort={handleSort} className="w-20 text-right" />
+                        <SortHeader label={sortLabels.tokPerSec} sortKey="tokPerSec" activeKey={sortKey} sortDir={sortDir} onSort={handleSort} className="w-16 text-right" />
+                        <SortHeader label={sortLabels.ttfb} sortKey="ttfb" activeKey={sortKey} sortDir={sortDir} onSort={handleSort} className="w-20 text-right" />
+                        <SortHeader label={sortLabels.auto} sortKey="auto" activeKey={sortKey} sortDir={sortDir} onSort={handleSort} className="w-16 text-right" />
+                        <SortHeader label={sortLabels.smart} sortKey="smart" activeKey={sortKey} sortDir={sortDir} onSort={handleSort} className="w-16 text-right" />
+                      </div>
+                      <span className="w-9 shrink-0 text-xs font-medium text-muted-foreground text-right">On</span>
+                    </div>
+                    <div className="divide-y">
+                    {poolEntries.map((entry, index) => (
+                      <ModelRow
+                        key={entry.modelDbId}
+                        entry={entry}
+                        index={index}
+                        onToggle={(id, enabled) => toggleMutation.mutate({ modelDbId: id, enabled })}
+                      />
+                    ))}
+                    </div>
+                  </div>
+                </PoolSection>
               ))}
-              </div>
             </div>
 
             {unconfiguredPlatforms.length > 0 && (
