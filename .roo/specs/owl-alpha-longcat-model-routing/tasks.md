@@ -28,63 +28,63 @@
 
 ## Phase 2: Proxy Changes (`server/src/routes/proxy.ts`)
 
-- [ ] **T2.1: Add Owl Alpha sticky cooldown check**
+- [x] **T2.1: Add Owl Alpha sticky cooldown check**
   - After the existing LongCat sticky cooldown block (~line 1209-1221):
     - Check if the sticky model's `platform === 'openrouter'` AND `model_id === 'owl-alpha'`
     - If within `LONGCAT_STICKY_COOLDOWN_MS`: add the specific `owl-alpha` model DB ID to `skipModels`
     - Log the cooldown activation
 
-- [ ] **T2.2: Change LongCat truncation handling to model-level**
+- [x] **T2.2: Change LongCat truncation handling to model-level**
   - Line ~1308-1318: Replace `banPlatformFromSession('longcat')` + `addProviderModelsToSkipModels(skipModels, 'longcat')` with `skipModels.add(route.modelDbId)`
   - Update log message to say "skipping model LongCat-2.0-Preview" instead of "banning LongCat provider"
 
-- [ ] **T2.3: Add Owl Alpha truncation handling (model-level)**
+- [x] **T2.3: Add Owl Alpha truncation handling (model-level)**
   - In the truncation check block (~line 1303-1318):
     - Add condition for `route.platform === 'openrouter' && route.modelId === 'owl-alpha'`
     - Use `skipModels.add(route.modelDbId)` (model-level, NOT platform-level)
     - Log: "Truncated stream content detected from Owl Alpha — skipping model openrouter/owl-alpha for session"
 
-- [ ] **T2.4: Change LongCat mid-stream 5xx handling to model-level**
+- [x] **T2.4: Change LongCat mid-stream 5xx handling to model-level**
   - Line ~1376-1387: Replace `banPlatformFromSession('longcat')` + `addProviderModelsToSkipModels(skipModels, 'longcat')` with `skipModels.add(route.modelDbId)`
   - Clear sticky if pinned to the specific model (check `route.modelId === 'LongCat-2.0-Preview'`)
 
-- [ ] **T2.5: Add Owl Alpha mid-stream 5xx handling (model-level)**
+- [x] **T2.5: Add Owl Alpha mid-stream 5xx handling (model-level)**
   - In the mid-stream 5xx block (~line 1376-1387):
     - Add condition for `route.platform === 'openrouter' && route.modelId === 'owl-alpha'`
     - Use `skipModels.add(route.modelDbId)` (model-level)
     - Clear sticky if pinned to the specific model
 
-- [ ] **T2.6: Change LongCat mid-stream truncation handling to model-level**
+- [x] **T2.6: Change LongCat mid-stream truncation handling to model-level**
   - Line ~1403-1413: Replace `banPlatformFromSession('longcat')` + `addProviderModelsToSkipModels(skipModels, 'longcat')` with `skipModels.add(route.modelDbId)`
 
-- [ ] **T2.7: Add Owl Alpha mid-stream truncation handling (model-level)**
+- [x] **T2.7: Add Owl Alpha mid-stream truncation handling (model-level)**
   - In the mid-stream truncation block (~line 1389-1432):
     - Add condition for `route.platform === 'openrouter' && route.modelId === 'owl-alpha'`
     - Use `skipModels.add(route.modelDbId)` (model-level)
 
-- [ ] **T2.8: Change LongCat mid-stream retryable error handling to model-level**
+- [x] **T2.8: Change LongCat mid-stream retryable error handling to model-level**
   - Line ~1434-1466: Replace `banPlatformFromSession('longcat')` + `addProviderModelsToSkipModels(skipModels, 'longcat')` with `skipModels.add(route.modelDbId)`
 
-- [ ] **T2.9: Add Owl Alpha mid-stream retryable error handling (model-level)**
+- [x] **T2.9: Add Owl Alpha mid-stream retryable error handling (model-level)**
   - In the mid-stream retryable error block (~line 1434-1466):
     - Add condition for `route.platform === 'openrouter' && route.modelId === 'owl-alpha'`
     - Use `skipModels.add(route.modelDbId)` (model-level)
 
-- [ ] **T2.10: Change LongCat non-stream 5xx handling to model-level**
+- [x] **T2.10: Change LongCat non-stream 5xx handling to model-level**
   - Line ~1536-1553: Replace `banPlatformFromSession('longcat')` + `addProviderModelsToSkipModels(skipModels, 'longcat')` with `skipModels.add(route.modelDbId)`
   - Clear sticky if pinned to the specific model
 
-- [ ] **T2.11: Add Owl Alpha non-stream 5xx handling (model-level)**
+- [x] **T2.11: Add Owl Alpha non-stream 5xx handling (model-level)**
   - In the non-stream 5xx block (~line 1531-1553):
     - Add condition for `route.platform === 'openrouter' && route.modelId === 'owl-alpha'`
     - Use `skipModels.add(route.modelDbId)` (model-level)
     - Clear sticky if pinned to the specific model
 
-- [ ] **T2.12: Change LongCat non-stream retryable error handling to model-level**
+- [x] **T2.12: Change LongCat non-stream retryable error handling to model-level**
   - Line ~1557-1569: Replace `banPlatformFromSession('longcat')` + `addProviderModelsToSkipModels(skipModels, 'longcat')` with `skipModels.add(route.modelDbId)`
   - Clear sticky if pinned to the specific model
 
-- [ ] **T2.13: Add Owl Alpha non-stream retryable error handling (model-level)**
+- [x] **T2.13: Add Owl Alpha non-stream retryable error handling (model-level)**
   - In the non-stream retryable error block (~line 1555-1581):
     - Add condition for `route.platform === 'openrouter' && route.modelId === 'owl-alpha'`
     - Use `skipModels.add(route.modelDbId)` (model-level)
