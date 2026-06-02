@@ -4,8 +4,9 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { apiFetch } from '@/lib/api'
 import { Button } from '@/components/ui/button'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { PageHeader } from '@/components/page-header'
+import { PoolSection } from '@/components/pool-section'
+import type { PoolType } from '@/components/pool-badge'
 
 interface FallbackEntry {
   modelDbId: number
@@ -14,6 +15,7 @@ interface FallbackEntry {
   modelId: string
   displayName: string
   keyCount: number
+  pool: PoolType
 }
 
 interface MessageMeta {
@@ -27,6 +29,13 @@ interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
   meta?: MessageMeta
+}
+
+const poolOrder: PoolType[] = ['fast', 'balanced', 'smart']
+const poolTitles: Record<PoolType, string> = {
+  fast: 'Fast — lowest latency',
+  balanced: 'Balanced — good speed & quality',
+  smart: 'Smart — highest intelligence',
 }
 
 function AssistantBubble({ msg, isStreaming = false }: { msg: ChatMessage; isStreaming?: boolean }) {
@@ -73,6 +82,7 @@ export default function PlaygroundPage() {
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [selectedModel, setSelectedModel] = useState<string>('auto')
+  const [modelPickerOpen, setModelPickerOpen] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const abortRef = useRef<AbortController | null>(null)
@@ -89,9 +99,23 @@ export default function PlaygroundPage() {
 
   const availableModels = fallbackEntries.filter(e => e.keyCount > 0 && e.enabled)
 
+  const poolGroups = poolOrder
+    .map(pool => ({ pool, entries: availableModels.filter(e => e.pool === pool) }))
+    .filter(group => group.entries.length > 0)
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  // Close model picker on Escape key
+  useEffect(() => {
+    if (!modelPickerOpen) return
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setModelPickerOpen(false)
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [modelPickerOpen])
 
   const handleSend = async () => {
     const text = input.trim()
@@ -246,23 +270,58 @@ export default function PlaygroundPage() {
         description="Send a chat completion through the router and see which provider serves it."
         actions={
           <>
-            <Select value={selectedModel} onValueChange={(v) => setSelectedModel(v ?? 'auto')}>
-              <SelectTrigger className="w-[260px]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="auto">Auto (fallback chain)</SelectItem>
-                <SelectItem value="freellmapi/auto-smart">Auto Smart (intelligence router)</SelectItem>
-                {availableModels.map(m => (
-                  <SelectItem key={m.modelDbId} value={m.modelId}>
-                    <span className="flex items-center gap-2">
-                      <span>{m.displayName}</span>
-                      <span className="text-xs text-muted-foreground">{m.platform}</span>
-                    </span>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <div className="relative">
+              <Button
+                variant="outline"
+                className="w-[260px] justify-between font-normal"
+                onClick={() => setModelPickerOpen(v => !v)}
+              >
+                <span className="truncate">{activeModelLabel}</span>
+                <span className="ml-2 text-xs text-muted-foreground">▾</span>
+              </Button>
+              {modelPickerOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setModelPickerOpen(false)} />
+                  <div className="absolute right-0 top-full mt-2 z-50 max-h-[70vh] overflow-y-auto w-[360px] space-y-3 rounded-lg border bg-background p-3 shadow-lg">
+                    {/* Auto routing options */}
+                    <div className="space-y-1">
+                      <button
+                        className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${selectedModel === 'auto' ? 'bg-primary/10 text-primary font-medium' : 'hover:bg-muted'}`}
+                        onClick={() => { setSelectedModel('auto'); setModelPickerOpen(false) }}
+                      >
+                        Auto (fallback chain)
+                      </button>
+                      <button
+                        className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${selectedModel === 'freellmapi/auto-smart' ? 'bg-primary/10 text-primary font-medium' : 'hover:bg-muted'}`}
+                        onClick={() => { setSelectedModel('freellmapi/auto-smart'); setModelPickerOpen(false) }}
+                      >
+                        Auto Smart (intelligence router)
+                      </button>
+                    </div>
+
+                    <div className="h-px bg-border" />
+
+                    {/* Models grouped by pool */}
+                    {poolGroups.map(({ pool, entries }) => (
+                      <PoolSection key={pool} pool={pool} title={poolTitles[pool]}>
+                        <div className="space-y-1">
+                          {entries.map(m => (
+                            <button
+                              key={m.modelDbId}
+                              className={`w-full text-left px-2 py-1.5 rounded-md text-sm transition-colors flex items-center gap-2 ${selectedModel === m.modelId ? 'bg-primary/10 text-primary font-medium' : 'hover:bg-muted'}`}
+                              onClick={() => { setSelectedModel(m.modelId); setModelPickerOpen(false) }}
+                            >
+                              <span className="truncate">{m.displayName}</span>
+                              <span className="text-xs text-muted-foreground shrink-0">{m.platform}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </PoolSection>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
             {messages.length > 0 && (
               <Button variant="outline" size="sm" onClick={handleClear}>
                 Clear
