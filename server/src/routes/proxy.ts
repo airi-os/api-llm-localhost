@@ -13,8 +13,9 @@ export const proxyRouter: Router = Router();
 // Sticky sessions: track which model served each "session"
 // Key: hash of first user message → model_db_id
 // This prevents model switching mid-conversation which causes hallucination
-const stickySessionMap = new Map<string, { modelDbId: number; keyId?: number; lastUsed: number }>();
+const stickySessionMap = new Map<string, { modelDbId: number; keyId?: number; bannedPlatforms?: Set<string>; lastUsed: number }>();
 const STICKY_TTL_MS = 30 * 60 * 1000; // 30 min session TTL
+const LONGCAT_STICKY_COOLDOWN_MS = 3 * 60 * 1000; // 3 min — bypass sticky preference for LongCat if session was used within this window
 const responseSessionMap = new Map<string, { messages: ChatMessage[]; lastUsed: number }>();
 const responseItemMap = new Map<string, ChatMessage>();
 const RESPONSE_SESSION_TTL_MS = 30 * 60 * 1000;
@@ -70,6 +71,16 @@ function getStickyKey(messages: ChatMessage[], routingMode: RoutingMode): number
     return undefined;
   }
 
+  // Check if the sticky model's platform is banned
+  if (entry.bannedPlatforms) {
+    const db = getDb();
+    const modelRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(entry.modelDbId) as { platform: string } | undefined;
+    if (modelRow && entry.bannedPlatforms.has(modelRow.platform)) {
+      console.log(`[Sticky] key skipped session=${key.slice(0, 8)} | model platform=${modelRow.platform} is banned`);
+      return undefined;
+    }
+  }
+
   if (entry.keyId !== undefined) {
     console.log(`[Sticky] key hit session=${key.slice(0, 8)} → keyId=${entry.keyId}`);
   } else {
@@ -77,6 +88,94 @@ function getStickyKey(messages: ChatMessage[], routingMode: RoutingMode): number
   }
   return entry.keyId;
 }
+
+function isSessionBannedFromPlatform(
+  messages: ChatMessage[],
+  routingMode: RoutingMode,
+  platform: string,
+): boolean {
+  const key = getSessionKey(messages, routingMode);
+  if (!key) return false;
+  const entry = stickySessionMap.get(key);
+  if (!entry) return false;
+  if (Date.now() - entry.lastUsed > STICKY_TTL_MS) {
+    stickySessionMap.delete(key);
+    return false;
+  }
+  return entry.bannedPlatforms?.has(platform) ?? false;
+}
+
+function banPlatformFromSession(
+  messages: ChatMessage[],
+  routingMode: RoutingMode,
+  platform: string,
+  modelDbId?: number,
+): void {
+  const key = getSessionKey(messages, routingMode);
+  if (!key) return;
+  let entry = stickySessionMap.get(key);
+  if (!entry) {
+    if (modelDbId === undefined) return;
+    entry = { modelDbId, bannedPlatforms: new Set(), lastUsed: Date.now() };
+  }
+  if (!entry.bannedPlatforms) entry.bannedPlatforms = new Set();
+  entry.bannedPlatforms.add(platform);
+  entry.lastUsed = Date.now();
+  stickySessionMap.set(key, entry);
+  console.log(`[Sticky] banned platform=${platform} for session=${key.slice(0, 8)} | bannedPlatforms=${Array.from(entry.bannedPlatforms).join(',')}`);
+}
+
+function addProviderModelsToSkipModels(skipModels: Set<number>, provider: string): void {
+  const db = getDb();
+  const providerModels = db.prepare(
+    'SELECT id FROM models WHERE platform = ? AND enabled = 1'
+  ).all(provider) as Array<{ id: number }>;
+  for (const m of providerModels) {
+    skipModels.add(m.id);
+  }
+  console.log(`[Sticky] added ${providerModels.length} ${provider} model(s) to skipModels: [${providerModels.map(m => m.id).join(',')}]`);
+}
+
+function resetAllConsecutiveFailures(
+  messages: ChatMessage[],
+  routingMode: RoutingMode,
+): void {
+  // No longer tracking consecutive failures; function retained for compatibility.
+}
+
+function isTruncatedResponse(errOrContent: any): boolean {
+  if (!errOrContent) return false;
+  let text: string;
+  if (typeof errOrContent === 'string') {
+    text = errOrContent;
+  } else if (errOrContent instanceof Error) {
+    text = errOrContent.message;
+  } else if (typeof errOrContent === 'object') {
+    try { text = JSON.stringify(errOrContent); } catch { return false; }
+  } else {
+    return false;
+  }
+  const lower = text.toLowerCase();
+  return lower.includes('truncated') || lower.includes('truncation') ||
+    lower.includes('context_length_exceeded') || lower.includes('token_limit') ||
+    lower.includes('maximum length') || lower.includes('response_length_limit') ||
+    lower.includes('cut off') || lower.includes('truncate')
+}
+
+// Exported for testing purposes only
+export {
+  isSessionBannedFromPlatform,
+  banPlatformFromSession,
+  addProviderModelsToSkipModels,
+  resetAllConsecutiveFailures,
+  isTruncatedResponse,
+  getSessionKey,
+  getStickyModel,
+  getStickyKey,
+  setStickyModel,
+  clearStickyModel,
+  stickySessionMap,
+};
 
 function clearStickyModel(messages: ChatMessage[], routingMode: RoutingMode) {
   const key = getSessionKey(messages, routingMode);
@@ -100,8 +199,13 @@ function clearStickyKey(messages: ChatMessage[], routingMode: RoutingMode) {
 function setStickyModel(messages: ChatMessage[], modelDbId: number, routingMode: RoutingMode, keyId?: number) {
   const key = getSessionKey(messages, routingMode);
   if (!key) return;
-  stickySessionMap.set(key, { modelDbId, keyId, lastUsed: Date.now() });
-  console.log(`[Sticky] set key=${key.slice(0, 8)} | msgs=${messages.length} → modelDbId=${modelDbId}${keyId !== undefined ? ` keyId=${keyId}` : ''}`);
+
+  // Preserve bannedPlatforms from existing entry
+  const existing = stickySessionMap.get(key);
+  const bannedPlatforms = existing?.bannedPlatforms;
+
+  stickySessionMap.set(key, { modelDbId, keyId, bannedPlatforms, lastUsed: Date.now() });
+  console.log(`[Sticky] set key=${key.slice(0, 8)} | msgs=${messages.length} → modelDbId=${modelDbId}${keyId !== undefined ? ` keyId=${keyId}` : ''}${bannedPlatforms && bannedPlatforms.size > 0 ? ` banned=${Array.from(bannedPlatforms).join(',')}` : ''}`);
 
   if (stickySessionMap.size > 500) {
     const now = Date.now();
@@ -385,6 +489,10 @@ function getErrorStatus(err: any): number | undefined {
   return typeof status === 'number' ? status : undefined;
 }
 
+function isBanEligibleStatus(status: number): boolean {
+  return status === 500 || status === 502 || status === 503 || status === 504;
+}
+
 function getErrorMessage(err: any): string {
   return String(err?.message ?? err?.error?.message ?? 'Unknown provider error');
 }
@@ -425,6 +533,20 @@ function isRetryableError(err: any): boolean {
     || msg.includes('404') || msg.includes('no longer available') || msg.includes('model not found')
     // 400 from a provider means provider-specific incompatibility (e.g. unsupported schema fields) — fall back
     || msg.includes('400') || msg.includes('bad request') || msg.includes('invalid json payload');
+}
+
+function isRetryableStreamError(streamErr: any): boolean {
+  const status = getErrorStatus(streamErr);
+  if (status === 429 || status === 401 || status === 403 || status === 408) return true;
+
+  const msg = getErrorMessage(streamErr).toLowerCase();
+  return msg.includes('429') || msg.includes('rate limit') || msg.includes('too many requests')
+    || msg.includes('quota') || msg.includes('resource_exhausted')
+    || msg.includes('unauthorized') || msg.includes('forbidden')
+    || msg.includes('aborted') || msg.includes('timeout') || msg.includes('etimedout')
+    || msg.includes('econnreset') || msg.includes('econnrefused')
+    || msg.includes('socket hang up') || msg.includes('network error')
+    || msg.includes('econnaborted') || msg.includes('connreset');
 }
 
 function shouldSkipModelOnRetry(err: any): boolean {
@@ -1036,18 +1158,60 @@ async function handleChatCompletion(
     preferredModel = getStickyModel(normalizedMessages, routingMode);
   }
 
-  // Sticky key: prefer the same API key within a LongCat session for
-  // session continuity on the provider side. Only pass preferredKeyId
-  // when the sticky model maps to the LongCat platform.
+  // Sticky key: prefer the same API key within a session for
+  // session continuity on the provider side. getStickyKey() already
+  // returns undefined when the sticky model's platform is banned.
   let preferredKeyId: number | undefined;
   if (preferredModel && !requestedModel) {
     const stickyKeyId = getStickyKey(normalizedMessages, routingMode);
     if (stickyKeyId !== undefined) {
-      const db = getDb();
-      const row = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
-      if (row?.platform === 'longcat') {
-        preferredKeyId = stickyKeyId;
-        console.log(`[Sticky] key preferred modelDbId=${preferredModel} keyId=${preferredKeyId} (longcat)`);
+      preferredKeyId = stickyKeyId;
+      console.log(`[Sticky] key preferred modelDbId=${preferredModel} keyId=${preferredKeyId}`);
+    }
+  }
+
+  // Check if session is banned from any platform — add all banned platforms' models to skipModels
+  // and clear preferredModel/preferredKeyId if it points to a banned platform.
+  const skipModels = new Set<number>();
+  const sessionKey = getSessionKey(normalizedMessages, routingMode);
+  if (sessionKey) {
+    const entry = stickySessionMap.get(sessionKey);
+    if (entry) {
+      if (Date.now() - entry.lastUsed > STICKY_TTL_MS) {
+        stickySessionMap.delete(sessionKey);
+      } else if (entry.bannedPlatforms) {
+        for (const platform of entry.bannedPlatforms) {
+          addProviderModelsToSkipModels(skipModels, platform);
+          console.log(`[Sticky] session banned from ${platform}, adding to skipModels`);
+        }
+      }
+    }
+  }
+
+  if (preferredModel) {
+    const db = getDb();
+    const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
+    if (prefRow && isSessionBannedFromPlatform(normalizedMessages, routingMode, prefRow.platform)) {
+      console.log(`[Sticky] skipping preferredModel=${preferredModel} (${prefRow.platform} banned for session)`);
+      preferredModel = undefined;
+      preferredKeyId = undefined;
+    }
+  }
+
+  // LongCat sticky cooldown: if the sticky model is on LongCat and was used
+  // within the last 3 minutes, exclude LongCat from the bandit router for all
+  // other sessions. The current sticky session keeps its pinned LongCat route.
+  // This prevents LongCat from seeing multiple sessions/keys from the same IP.
+  if (preferredModel) {
+    const db = getDb();
+    const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
+    if (prefRow?.platform === 'longcat') {
+      const cooldownSessionKey = getSessionKey(normalizedMessages, routingMode);
+      const cooldownEntry = cooldownSessionKey ? stickySessionMap.get(cooldownSessionKey) : undefined;
+      if (cooldownEntry && Date.now() - cooldownEntry.lastUsed < LONGCAT_STICKY_COOLDOWN_MS) {
+        const ageMs = Date.now() - cooldownEntry.lastUsed;
+        addProviderModelsToSkipModels(skipModels, 'longcat');
+        console.log(`[Sticky] LongCat cooldown active — excluding LongCat from bandit routing for other sessions | session=${cooldownSessionKey?.slice(0, 8)} | lastUsed=${ageMs}ms ago`);
       }
     }
   }
@@ -1055,7 +1219,6 @@ async function handleChatCompletion(
   // Retry loop: skip bad keys and, for non-rate-limit errors, skip the model
   // entirely so the fallback chain can move to a different provider/model.
   const skipKeys = new Set<string>();
-  const skipModels = new Set<number>();
   let lastError: any = null;
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
@@ -1132,6 +1295,25 @@ async function handleChatCompletion(
             }
           }
 
+          // Check for truncated response content after stream completes.
+          // The stream has already been sent to the client — no retry within same request.
+          // Future requests in this session will route to other providers.
+          {
+            const streamTextToCheck = responseStreamContext ? responseStreamContext.outputText : streamedText;
+            if (isTruncatedResponse(streamTextToCheck)) {
+              if (route.platform === 'longcat') {
+                // LongCat: exclude entire provider immediately on truncation
+                console.warn(`[Proxy] Truncated stream content detected from LongCat — banning LongCat provider for session`);
+                banPlatformFromSession(normalizedMessages, routingMode, 'longcat', route.modelDbId);
+                addProviderModelsToSkipModels(skipModels, 'longcat');
+              } else {
+                // Non-LongCat: skip only this specific model, other models from same provider remain available
+                console.warn(`[Proxy] Truncated stream content detected from ${route.platform} — skipping model ${route.modelId} for session`);
+                skipModels.add(route.modelDbId);
+              }
+            }
+          }
+
           if (!streamStarted) {
             // Upstream returned no chunks — emit minimal successful stream.
             res.setHeader('Content-Type', 'text/event-stream');
@@ -1180,10 +1362,105 @@ async function handleChatCompletion(
           recordTokens(route.platform, route.modelId, route.keyId, estimatedInputTokens + totalOutputTokens);
           recordSuccess(route.modelDbId);
           setStickyModel(normalizedMessages, route.modelDbId, routingMode, route.keyId);
+          resetAllConsecutiveFailures(normalizedMessages, routingMode);
           logRequest(route.platform, route.modelId, 'success', estimatedInputTokens, totalOutputTokens, Date.now() - start, ttfbMs, null);
           return;
         } catch (streamErr: any) {
           if (streamStarted) {
+            // 5xx failure detection for mid-stream errors
+            // LongCat: exclude entire provider immediately on any 5xx
+            // Non-LongCat: skip only this specific model, other models from same provider remain available
+            const streamErrStatus = getErrorStatus(streamErr);
+            if (streamErrStatus && isBanEligibleStatus(streamErrStatus)) {
+              if (route.platform === 'longcat') {
+                console.warn(`[Proxy] Mid-stream 5xx from LongCat — excluding entire LongCat provider for session`);
+                banPlatformFromSession(normalizedMessages, routingMode, 'longcat', route.modelDbId);
+                addProviderModelsToSkipModels(skipModels, 'longcat');
+              } else {
+                console.warn(`[Proxy] Mid-stream 5xx from ${route.platform} — skipping model ${route.modelId} only`);
+                skipModels.add(route.modelDbId);
+              }
+            }
+  
+            // Generalized truncation detection for any provider (not just LongCat)
+            // Aggregate all possible error text sources for comprehensive detection
+            const truncationTexts: string[] = [];
+            if (streamErr instanceof Error) {
+              truncationTexts.push(streamErr.message);
+            }
+            if (streamErr?.response?.data) {
+              truncationTexts.push(typeof streamErr.response.data === 'string' ? streamErr.response.data : JSON.stringify(streamErr.response.data));
+            }
+            if (streamErr?.body) {
+              truncationTexts.push(typeof streamErr.body === 'string' ? streamErr.body : JSON.stringify(streamErr.body));
+            }
+            truncationTexts.push(String(streamErr));
+            const combinedTruncationText = truncationTexts.join(' ');
+            if (isTruncatedResponse(combinedTruncationText)) {
+              if (route.platform === 'longcat') {
+                // LongCat: exclude entire provider immediately on truncation
+                console.warn(`[Proxy] Truncation error mid-stream from LongCat — excluding entire LongCat provider for session, ending stream gracefully`);
+                banPlatformFromSession(normalizedMessages, routingMode, 'longcat', route.modelDbId);
+                addProviderModelsToSkipModels(skipModels, 'longcat');
+              } else {
+                // Non-LongCat: skip only this specific model
+                console.warn(`[Proxy] Truncation error mid-stream from ${route.platform} — skipping model ${route.modelId} only, ending stream gracefully`);
+                skipModels.add(route.modelDbId);
+              }
+              try {
+                if (responseStreamContext) {
+                  writeResponseStreamEvent(res, {
+                    type: 'response.completed',
+                    response: {
+                      id: responseStreamContext.responseId,
+                      status: 'completed',
+                      model: route.modelId,
+                      output_text: responseStreamContext.outputText,
+                    },
+                  });
+                } else {
+                  res.write('data: [DONE]\n\n');
+                }
+                res.end();
+              } catch { /* socket gone */ }
+              logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, totalOutputTokens, Date.now() - start, ttfbMs, streamErr.message);
+              return;
+            }
+          
+            // Mid-stream retryable error handling for LongCat
+            if (route.platform === 'longcat' && isRetryableStreamError(streamErr)) {
+              console.warn(`[Proxy] Mid-stream retryable error from LongCat — excluding entire LongCat provider for session`);
+              banPlatformFromSession(normalizedMessages, routingMode, 'longcat', route.modelDbId);
+              addProviderModelsToSkipModels(skipModels, 'longcat');
+              // Clear sticky preference if pinned to LongCat
+              if (preferredModel) {
+                const db = getDb();
+                const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
+                if (prefRow?.platform === 'longcat') {
+                  preferredModel = undefined;
+                  preferredKeyId = undefined;
+                }
+              }
+              try {
+                if (responseStreamContext) {
+                  writeResponseStreamEvent(res, {
+                    type: 'response.completed',
+                    response: {
+                      id: responseStreamContext.responseId,
+                      status: 'completed',
+                      model: route.modelId,
+                      output_text: responseStreamContext.outputText,
+                    },
+                  });
+                } else {
+                  res.write('data: [DONE]\n\n');
+                }
+                res.end();
+              } catch { /* socket gone */ }
+              logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, totalOutputTokens, Date.now() - start, ttfbMs, streamErr.message);
+              return;
+            }
+
             // Mid-stream error — finish the SSE response cleanly instead of leaving
             // the client hanging or letting Express's default handler take over.
             // Full upstream message goes to the log; the client sees a generic
@@ -1227,6 +1504,7 @@ async function handleChatCompletion(
         recordTokens(route.platform, route.modelId, route.keyId, totalTokens);
         recordSuccess(route.modelDbId);
         setStickyModel(normalizedMessages, route.modelDbId, routingMode, route.keyId);
+        resetAllConsecutiveFailures(normalizedMessages, routingMode);
 
         res.setHeader('X-Routed-Via', `${route.platform}/${route.modelId}`);
         if (attempt > 0) res.setHeader('X-Fallback-Attempts', String(attempt));
@@ -1246,17 +1524,59 @@ async function handleChatCompletion(
       const latency = Date.now() - start;
       logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, null, err.message);
 
-      if (isRetryableError(err)) {
-        const skipId = `${route.platform}:${route.modelId}:${route.keyId}`;
-        skipKeys.add(skipId);
-        if (shouldSkipModelOnRetry(err)) {
+      // 5xx failure detection
+      // LongCat: exclude entire provider immediately on any 5xx
+      // Non-LongCat: skip only this specific model, other models from same provider remain available
+      const errStatus = getErrorStatus(err);
+      if (errStatus && isBanEligibleStatus(errStatus)) {
+        if (route.platform === 'longcat') {
+          console.warn(`[Proxy] 5xx from LongCat — excluding entire LongCat provider for session`);
+          banPlatformFromSession(normalizedMessages, routingMode, 'longcat', route.modelDbId);
+          addProviderModelsToSkipModels(skipModels, 'longcat');
+          // Clear sticky if pinned to LongCat
+          if (preferredModel) {
+            const db = getDb();
+            const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
+            if (prefRow?.platform === 'longcat') {
+              preferredModel = undefined;
+              preferredKeyId = undefined;
+            }
+          }
+        } else {
+          console.warn(`[Proxy] 5xx from ${route.platform} — skipping model ${route.modelId} only`);
           skipModels.add(route.modelDbId);
         }
-        if (isRateLimitError(err)) {
-          setCooldown(route.platform, route.modelId, route.keyId, 120_000);
+      }
+
+      if (isRetryableError(err)) {
+        // LongCat: on any retryable error, exclude entire provider immediately
+        if (route.platform === 'longcat') {
+          console.warn(`[Proxy] Retryable error from LongCat — excluding entire LongCat provider for session`);
+          banPlatformFromSession(normalizedMessages, routingMode, 'longcat', route.modelDbId);
+          addProviderModelsToSkipModels(skipModels, 'longcat');
+          if (preferredModel) {
+            const db = getDb();
+            const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
+            if (prefRow?.platform === 'longcat') {
+              preferredModel = undefined;
+              preferredKeyId = undefined;
+            }
+          }
+        } else {
+          // Non-LongCat: skip the specific key that failed
+          const skipId = `${route.platform}:${route.modelId}:${route.keyId}`;
+          skipKeys.add(skipId);
+          // Non-rate-limit, non-auth errors: skip the model so fallback moves to a different model
+          if (shouldSkipModelOnRetry(err)) {
+            skipModels.add(route.modelDbId);
+          }
+          // Rate-limit errors: cooldown this key but allow other keys for the same model
+          if (isRateLimitError(err)) {
+            setCooldown(route.platform, route.modelId, route.keyId, 120_000);
+          }
         }
-        // Auth errors (401/403): clear the sticky key for this session so the
-        // retry unpins the broken key and falls through to round-robin.
+        // Auth errors (401/403): clear the sticky key for this session
+        // so the retry unpins the broken key and falls through to round-robin.
         if (isAuthError(err)) {
           const authStatus = getErrorStatus(err);
           console.warn(`[Proxy] auth error ${authStatus} from ${route.displayName}/${route.modelId}, clearing sticky key for session`);

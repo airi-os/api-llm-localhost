@@ -1,0 +1,146 @@
+# Requirements: LongCat Session Ban & Fallback
+
+## Overview
+
+When a LongCat sticky session encounters an error — whether it's an auth failure (401/40403) or a "truncated" / "conflict" error from the provider — the system must:
+
+1. Detect the error, 2. Ban the entire `longcat` platform for this sticky session, 3. Fall back to the next best non-LongCat model via normal routing, 4. Update the sticky session to point to the new fallback model, 5. Never route this session to LongCat again (until the session expires via TTL)
+
+## Context
+
+The existing sticky sessions feature lives in [`server/src/routes/proxy.ts`](server/src/routes/proxy.ts:13-112). It uses an SHA-1 hash of `routingMode + firstUserMessage` to identify sessions, and stores `{ modelDbId, optional keyId, lastUsed }` with a 30-min TTL and 500-entry max.
+
+The existing LongCat sticky key feature ([`longcat-sticky-key` spec](../../roo/specs/longcat-sticky-key/)) extends this to also prefer using the **same API key** within a session. For LongCat specifically, because LongCat benefits from session continuity at the key level (same key = same session context on their server side). The current behavior on auth errors (401/403) is to [`clearStickyKey()`](server/src/routes/proxy.ts:89-98) — which clears the sticky key but **keeps the sticky model pinned to LongCat** via [`preferredModel`](server/src/routes/proxy.ts:1036-1037). On retry, [`routeRequest()`](server/src/services/router.ts:458) still has `preferredModel` pointing to LongCat, and tries **another LongCat key** via round-robin. LongCat detects different key usage for the same session → the "multiple API keys" problem. The [`shouldSkipModelOnRetry()`](server/src/routes/proxy.ts:430-432) function explicitly **does NOT skip the model** for auth errors or rate limit errors — so auth failures on LongCat result in key rotation within the same LongCat model, which is exactly what LongCat detects as "multiple API keys use" for the same session.
+
+Similarly, when LongCat returns a "truncated" or "conflict" error (the provider truncates the response mid-stream), the current behavior is to silently switch to a different key, but the session continues on LongCat with a different key — same problem. The "truncated" error pattern is also detected by [`isRetryableError()`](server/src/routes/proxy.ts:409-4428), which checks for 429, 413, 400, 404, 408, 409, 422, 500, 502, 503, 504, `rate limit`, `quota`, `aborted`, `timeout`, `econnrefused`, `econnreset`, `unauthorized`, `forbidden`, `invalid api key`, `no longer available`, `model not found`, `bad request`, `invalid json payload`. The `isRetryableError()` function returns true for all these cases, meaning the proxy will retry with a different model/key. However, [`shouldSkipModelOnRetry()`](server/src/routes/proxy.ts:430-432) returns `true` only for rate-limit and auth errors — it does NOT skip the model. This means auth errors and LongCat result in key rotation within the same model, which is exactly the behavior LongCat detects as "multiple API keys use" for the same session. The existing [`clearStickyKey()`](server/src/routes/proxy.ts:89-98) only clears the sticky key but **keeps `preferredKeyId` to `undefined`** — but the sticky model remains pinned to LongCat. On the next retry, [`routeRequest()`](server/src/services/router.ts:458) still receives `preferredModel` pointing to LongCat, and tries another LongCat key via round-robin. The LongCat smart-auto preference in [`router.ts`](server/src/services/router.ts:498-527) also means LongCat is still tried first in smart mode, so the retry will likely hit LongCat again.
+
+## Functional Requirements
+
+### FR-1: Detect Multiple Key Use on LongCat
+
+When a LongCat provider returns an error indicating that the same API key is been used for the same session (the system must detect this condition. The error response contains language signaling multiple key use. A single session. Detection patterns:
+- Auth errors (401/403) — the current behavior already clears the sticky key but tries another key on the same model
+- Rate-limit errors (429) — same pattern: key rotation within the same model
+- "Truncated" / "conflict" errors — LongCat truncates responses mid-stream when the response is shorter than expected, indicating the provider cut off the session
+
+### FR-2: Ban LongCat Platform for Sticky Session
+
+When FR-1 is triggered, the system must ban the entire `longcat` platform for the current sticky session. This means:
+- All LongCat model IDs must be added to `skipModels` in the retry loop
+- The sticky session must be updated to point to the new fallback model instead of LongCat
+- The session must never be routed to LongCat again until the session expires via TTL (30 min)
+- The ban must persist across multiple retry attempts within the same request
+
+### FR-3: Fallback to Next Best Non-LongCat Model
+
+After banning LongCat, the retry loop must fall through to the next best available model via the existing Thompson Sampling / smart routing logic. The new model should be selected based on the normal scoring algorithm (success rate + speed + TTFB + intelligence for smart mode, success rate + speed in balanced mode).
+
+### FR-4: Update Sticky Session to New Model
+
+On successful fallback, the sticky session must be updated to point to the new fallback model and `modelDbId` + `keyId`. The sticky key feature should be cleared for the new model since the fallback is not LongCat, since the sticky key preference only applies to LongCat sessions.
+
+### FR-5: Never Route Session to LongCat Again
+
+Once a session is banned from LongCat, it must never be routed to LongCat again for the remainder of that session's lifetime (30 min TTL). This means:
+- The `stickySessionMap` entry must include a `bannedPlatforms` field (or `Set<string>`) to track which platforms are banned for this session
+- On subsequent requests in the same session, `getStickyModel()` returns the preferred model, but the proxy layer must check if the session is banned from LongCat and skip LongCat models before calling `routeRequest()`
+- The LongCat smart-auto preference in `router.ts` must also be suppressed for banned sessions (the router should not boost LongCat entries to the front for sessions that are banned from LongCat)
+
+### FR-6: Truncated Response Detection
+
+When a LongCat streaming response is received, the proxy must check the response content for signs of truncation. If detected, the session must be banned from LongCat immediately, even if the stream has already started (headers sent, the client has already received partial data). The system must:
+- Log the truncation detection
+- Record the ban in the sticky session
+- Add all LongCat model IDs to `skipModels`
+- End stream and ban for future requests
+- The client receives the truncated partial response as-is; future requests in this session will route to non-LongCat models
+
+### FR-7: Auth Error Handling for LongCat Sessions
+
+When an auth error (401/403) occurs on a LongCat sticky session:
+- Clear the sticky key via `clearStickyKey()` (existing behavior)
+- Additionally ban the LongCat platform for this session via the new `banPlatformFromSession()` function
+- Add all LongCat model IDs to `skipModels`
+- Set `preferredKeyId` to `undefined`
+- On retry, fall through to the next best non-LongCat model
+- Update sticky session to the new model on success
+
+### FR-8: Rate-Limit Error Handling for LongCat Sessions
+
+When a rate-limit error (429) occurs on a LongCat sticky session:
+- Ban the LongCat platform for this session via `banPlatformFromSession()`
+- Add all LongCat model IDs to `skipModels`
+- Set `preferredKeyId` to `undefined`
+- On retry, fall through to the next best non-LongCat model
+- Update sticky session to the new model on success
+- Note: rate-limit errors on LongCat do NOT clear the entire sticky session (the session may still work with a different key on a different model). Only ban LongCat specifically.
+
+### FR-9: Existing Behavior Preserved for Non-LongCat Sessions
+
+All existing sticky session behavior for non-LongCat providers must remain unchanged. The new ban mechanism only applies exclusively to LongCat sessions. Non-LongCat sessions that never have platform bans.
+
+### FR-10: Session Expiry Clears Bans
+
+When a sticky session expires (via TTL (30 min), the `bannedPlatforms` set is also cleared. This is natural — expired sessions are evicted from the `stickySessionMap` entirely, including all associated data.
+
+### FR-11: No Database Schema Changes
+
+The ban mechanism is purely in-memory, using the existing `stickySessionMap`. No database schema changes are required.
+
+### FR-12: Minimal Router Changes
+
+The router (`server/src/services/router.ts`) should not need significant changes. The only change is that the LongCat smart-auto preference logic should skip sessions that are banned from LongCat. The proxy layer handles all ban detection and session management. The router remains provider-agnostic.
+
+### FR-13: No UI Changes
+
+This is a backend-only feature. No client-side changes are needed.
+
+## Non-Functional Requirements
+
+### NFR-1: Backward Compatibility
+
+Existing sessions without `bannedPlatforms` (from before this feature or for non-LongCat providers) must continue to work. The `bannedPlatforms` field must be optional in the sticky session map value type.
+
+### NFR-2: Thread Safety
+
+The existing `stickySessionMap` is a plain `Map` with no locking (single-threaded Node.js). The extended map follows the same pattern — no additional concurrency concerns.
+
+### NFR-3: Minimal Performance Impact
+
+The ban check adds one `Set` lookup per one optional field check in the sticky session map entry per one DB query to check if a model is on a banned platform. No additional I/O beyond what already exists.
+
+### NFR-4: Test Coverage
+
+New unit tests must cover:
+- Multiple key use detection (auth + rate limit + truncated)
+- Session ban persistence across retries
+- Fallback to next best model
+- Sticky session update on success
+- Session expiry clearing bans
+- Non-LongCat sessions unaffected
+
+## Files Requiring Modification
+
+| # | File | Change Type | Description |
+|---|---|---|---|
+| 1 | [`server/src/routes/proxy.ts`](server/src/routes/proxy.ts:16) | Edit | Extend `stickySessionMap` value type to include `bannedPlatforms` |
+| 2 | [`server/src/routes/proxy.ts`](server/src/routes/proxy.ts:34-52) | Edit | Add `isSessionBannedFromPlatform()` helper function |
+| 3 | [`server/src/routes/proxy.ts`](server/src/routes/proxy.ts:54-79) | Edit | Update `getStickyKey()` to check bans before returning key |
+| 4 | [`server/src/routes/proxy.ts`](server/src/routes/proxy.ts:81-87) | Edit | Update `clearStickyModel()` to also clear `bannedPlatforms` |
+| 5 | [`server/src/routes/proxy.ts`](server/src/routes/proxy.ts:100-112) | Edit | Update `setStickyModel()` to also store `bannedPlatforms` |
+| 6 | [`server/src/routes/proxy.ts`](server/src/routes/proxy.ts:1039-1053) | Edit | Add `banPlatformFromSession()` function |
+| 7 | [`server/src/routes/proxy.ts`](server/src/routes/proxy.ts:1036-1053) | Edit | Add `addLongcatModelsToSkipModels()` helper |
+| 8 | [`server/src/routes/proxy.ts`](server/src/routes/proxy.ts:1245-1281) | Edit | Update error handling in retry loop to detect multiple key use + ban LongCat |
+| 9 | [`server/src/routes/proxy.ts`](server/src/routes/proxy.ts:1147-1149) | Edit | Add truncated response detection in streaming success path |
+| 10 | [`server/src/services/router.ts`](server/src/services/router.ts:498-527) | Edit | Skip LongCat boost for banned sessions |
+| 11 | [`server/src/routes/proxy.ts`](server/src/routes/proxy.ts:1036-1053) | Edit | Pass `bannedPlatforms` to `routeRequest()` via `skipModels` |
+
+## Out of Scope
+
+- Persistent bans across server restarts (in-memory only, same as existing sticky sessions)
+- Changes to the Thompson Sampling algorithm itself
+- Changes to rate limiting logic
+- Changes to the fallback chain ordering in balanced mode
+- Client-side UI changes
+- Configuration UI for enabling/disabling bans per provider (hardcoded to LongCat only)
+- Changes to the `OpenAICompatProvider` class
