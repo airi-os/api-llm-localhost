@@ -4,7 +4,9 @@ import { decrypt } from '../lib/crypto.js';
 import { canMakeRequest, canUseTokens, isOnCooldown } from './ratelimit.js';
 import type { BaseProvider } from '../providers/base.js';
 import type { Database } from 'better-sqlite3';
-import { ModelPool } from '@freellmapi/shared/types.js';
+import { ModelPool, type RoutingMode } from '@freellmapi/shared/types.js';
+
+export { ModelPool };
 
 interface ChainRow {
   model_db_id: number;
@@ -167,8 +169,6 @@ interface ModelStats {
   avgTtfbMs: number | null;
 }
 
-export type RoutingMode = 'balanced' | 'smart' | 'fast';
-
 // ── Balanced mode exclusions ────────────────────────────────────────────────
 // LongCat and Owl Alpha are excluded from balanced auto-routing so they are
 // only reachable via explicit model request or smart-mode preference.
@@ -182,6 +182,7 @@ let statsCacheTime = 0;
 let maxTokPerSec = 0;
 
 export function refreshStatsCache(db: Database, force = false): void {
+  if (!force && statsCache && Date.now() - statsCacheTime < ANALYTICS_CACHE_TTL_MS) return;
 
   const since = new Date(Date.now() - ANALYTICS_WINDOW_MS).toISOString();
   // Recency weight per row: MAX(0, MIN(1.0, 1.0 - days_ago / 7.0))
@@ -395,7 +396,7 @@ function fastSampleScore(entry: ChainRow, minIntelligenceRank: number, maxIntell
 export function getAnalyticsScores(): Array<{
   platform: string;
   modelName: string;
-    modelId: string; // added for compatibility with fallback route
+  modelId: string;
   score: number;
   thompsonScore: number;
   successRate: number;
@@ -403,8 +404,8 @@ export function getAnalyticsScores(): Array<{
   tokPerSec: number;
   avgTtfbMs: number | null;
 }> {
-  if (!statsCache) return [];
   if (!statsCache) { refreshStatsCache(getDb(), true); }
+  if (!statsCache) return [];
   const db = getDb();
   const intelligenceRows = db.prepare(`
     SELECT platform, model_id, intelligence_rank
@@ -434,7 +435,7 @@ export function getAnalyticsScores(): Array<{
     const intelligenceRank = intelligenceMap.get(`${platform}:${modelName}`);
     const thompsonScore = thompsonSampleScore(platform, modelName, intelligenceRank, minIntelligenceRank, maxIntelligenceRank);
     result.push({
-    modelId: modelName,
+      modelId: modelName,
       platform,
       modelName,
       score: getAnalyticsScore(platform, modelName, intelligenceRank, minIntelligenceRank, maxIntelligenceRank),

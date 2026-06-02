@@ -2,7 +2,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { getDb } from '../db/index.js';
-import { getAllPenalties, getAnalyticsScores, getAnalyticsScore, getSmartAnalyticsScore, refreshStatsCache, PENALTY_SCORE_WEIGHT } from '../services/router.js';
+import { getAllPenalties, getAnalyticsScores, getAnalyticsScore, getSmartAnalyticsScore, refreshStatsCache, PENALTY_SCORE_WEIGHT, classifyModel, ModelPool } from '../services/router.js';
 
 export const fallbackRouter: Router = Router();
 
@@ -34,6 +34,10 @@ fallbackRouter.get('/', (_req: Request, res: Response) => {
   const minIntelligenceRank = Math.min(...intelligenceRanks);
   const maxIntelligenceRank = Math.max(...intelligenceRanks);
 
+  const speedRanks = rows.map(r => r.speed_rank);
+  const minSpeedRank = Math.min(...speedRanks);
+  const maxSpeedRank = Math.max(...speedRanks);
+
   const result = rows.map(r => {
     const penalty = penaltyMap.get(r.model_db_id);
     const analytics = analyticsMap.get(`${r.platform}:${r.model_id}`);
@@ -52,6 +56,14 @@ fallbackRouter.get('/', (_req: Request, res: Response) => {
       maxIntelligenceRank,
     );
     const penaltyVal = penalty?.penalty ?? 0;
+    const pool = classifyModel(
+      r.speed_rank,
+      r.intelligence_rank,
+      minSpeedRank,
+      maxSpeedRank,
+      minIntelligenceRank,
+      maxIntelligenceRank,
+    );
     return {
       modelDbId: r.model_db_id,
       priority: r.priority,
@@ -70,6 +82,7 @@ fallbackRouter.get('/', (_req: Request, res: Response) => {
       displayName: r.display_name,
       intelligenceRank: r.intelligence_rank,
       speedRank: r.speed_rank,
+      pool,
       rpmLimit: r.rpm_limit,
       rpdLimit: r.rpd_limit,
       monthlyTokenBudget: r.monthly_token_budget,
