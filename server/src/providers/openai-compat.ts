@@ -68,6 +68,11 @@ export class OpenAICompatProvider extends BaseProvider {
     }
 
     const data = await res.json() as ChatCompletionResponse;
+
+    if (this.isWrappedError(data)) {
+      this.throwWrappedError(data);
+    }
+
     normalizeChoices(data);
     data._routed_via = { platform: this.platform, model: modelId };
     return data;
@@ -123,7 +128,11 @@ export class OpenAICompatProvider extends BaseProvider {
         const data = trimmed.slice(6);
         if (data === '[DONE]') return;
         try {
-          yield JSON.parse(data) as ChatCompletionChunk;
+          const parsed = JSON.parse(data) as ChatCompletionChunk;
+          if (this.isWrappedError(parsed)) {
+            this.throwWrappedError(parsed);
+          }
+          yield parsed;
         } catch {
           // Skip malformed chunks
         }

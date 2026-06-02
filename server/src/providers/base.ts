@@ -109,7 +109,7 @@ export abstract class BaseProvider {
     return null;
   }
 
-  private extractErrorMessage(body: unknown, fallback: string): string {
+  protected extractErrorMessage(body: unknown, fallback: string): string {
     if (typeof body === 'string') return body || fallback;
     if (!body || typeof body !== 'object') return fallback;
 
@@ -119,5 +119,32 @@ export abstract class BaseProvider {
 
   protected makeId(): string {
     return `chatcmpl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  /** Detect a root-level `error` field in a parsed JSON body — used to catch
+   *  upstream providers that return error payloads with HTTP 200 status. */
+  protected isWrappedError(body: unknown): boolean {
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) return false;
+    const obj = body as Record<string, unknown>;
+    if (!('error' in obj) || obj.error === null) return false;
+    return typeof obj.error === 'string' || typeof obj.error === 'object';
+  }
+
+  /** Throw a ProviderApiError from a detected wrapped error payload.
+   *  Called after isWrappedError() returns true. */
+  protected throwWrappedError(body: unknown): void {
+    const obj = body as Record<string, unknown>;
+    const errPayload = obj.error;
+    const message = this.extractErrorMessage(body, 'Unknown wrapped error');
+    const error = new Error(
+      `${this.name} API error (wrapped in 200): ${message}`,
+    ) as ProviderApiError;
+    error.status =
+      typeof errPayload === 'object' && errPayload !== null && 'code' in (errPayload as Record<string, unknown>)
+        ? Number((errPayload as Record<string, unknown>).code)
+        : 200;
+    error.provider = this.name;
+    error.responseBody = body;
+    throw error;
   }
 }
