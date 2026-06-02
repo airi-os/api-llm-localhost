@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
+import { evaluateThreadProtection } from '../services/threadProtection.js';
 import type { ChatCompletionChunk, ChatCompletionResponse, ChatMessage, ChatToolCall, ChatToolDefinition } from '@freellmapi/shared/types.js';
 import { routeRequest, recordSuccess, type RouteResult, type RoutingMode } from '../services/router.js';
 import { recordRequest, recordTokens, setCooldown } from '../services/ratelimit.js';
@@ -15,7 +16,12 @@ export const proxyRouter: Router = Router();
 // This prevents model switching mid-conversation which causes hallucination
 const stickySessionMap = new Map<string, { modelDbId: number; keyId?: number; bannedPlatforms?: Set<string>; lastUsed: number }>();
 const STICKY_TTL_MS = 30 * 60 * 1000; // 30 min session TTL
-const LONGCAT_STICKY_COOLDOWN_MS = 3 * 60 * 1000; // 3 min — bypass sticky preference for LongCat if session was used within this window
+const THREAD_COOLDOWN_MS = 3 * 60 * 1000; // 3 min — bypass sticky preference for LongCat if session was used within this window
+// Stream heartbeat & stall protection config — exported for test overrides
+export const streamKeepaliveConfig = {
+  KEEPALIVE_INTERVAL_MS: 15000, // Send a heartbeat comment every 15s of inactivity
+  MAX_STREAM_STALL_MS: 45000,   // Abort the stream if stalled for 45s
+};
 const responseSessionMap = new Map<string, { messages: ChatMessage[]; lastUsed: number }>();
 const responseItemMap = new Map<string, ChatMessage>();
 const RESPONSE_SESSION_TTL_MS = 30 * 60 * 1000;
@@ -1198,20 +1204,57 @@ async function handleChatCompletion(
     }
   }
 
-  // LongCat sticky cooldown: if the sticky model is on LongCat and was used
-  // within the last 3 minutes, exclude LongCat from the bandit router for all
-  // other sessions. The current sticky session keeps its pinned LongCat route.
-  // This prevents LongCat from seeing multiple sessions/keys from the same IP.
-  if (preferredModel) {
-    const db = getDb();
-    const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
-    if (prefRow?.platform === 'longcat') {
-      const cooldownSessionKey = getSessionKey(normalizedMessages, routingMode);
-      const cooldownEntry = cooldownSessionKey ? stickySessionMap.get(cooldownSessionKey) : undefined;
-      if (cooldownEntry && Date.now() - cooldownEntry.lastUsed < LONGCAT_STICKY_COOLDOWN_MS) {
-        const ageMs = Date.now() - cooldownEntry.lastUsed;
-        addProviderModelsToSkipModels(skipModels, 'longcat');
-        console.log(`[Sticky] LongCat cooldown active — excluding LongCat from bandit routing for other sessions | session=${cooldownSessionKey?.slice(0, 8)} | lastUsed=${ageMs}ms ago`);
+  // ── Thread protection: dynamically exclude models actively used by other sessions ──
+  // If another sticky session has used a model within THREAD_COOLDOWN_MS, that model
+  // becomes a soft-exclusion candidate. Exhaustion protection ensures we never block
+  // all available models — preferring shared access over outright failure.
+  {
+    const currentSessionKey = getSessionKey(normalizedMessages, routingMode);
+    const activeCooldownModels = new Set<number>();
+    const threadNow = Date.now();
+
+    for (const [key, entry] of stickySessionMap) {
+      // Self-preservation: never exclude the current session's own pinned model
+      if (currentSessionKey && key === currentSessionKey) continue;
+
+      // Expired entries are irrelevant — the session has gone quiet
+      if (threadNow - entry.lastUsed > STICKY_TTL_MS) continue;
+
+      // Only consider entries within the cooldown window
+      if (threadNow - entry.lastUsed < THREAD_COOLDOWN_MS) {
+        activeCooldownModels.add(entry.modelDbId);
+      }
+    }
+
+    // Exhaustion protection: if cooldown would block ALL available models,
+    // clear the set and let the request through rather than failing outright.
+    if (activeCooldownModels.size > 0) {
+      const db = getDb();
+      const allEnabled = db.prepare('SELECT id FROM models WHERE enabled = 1').all() as Array<{ id: number }>;
+      const allEnabledIds = new Set(allEnabled.map(m => m.id));
+
+      // Remove the current preferred model from cooldown consideration
+      if (preferredModel !== undefined) {
+        activeCooldownModels.delete(preferredModel);
+      }
+
+      // Check if cooldown would exhaust all models
+      let wouldExhaustAll = true;
+      for (const id of allEnabledIds) {
+        if (!activeCooldownModels.has(id)) {
+          wouldExhaustAll = false;
+          break;
+        }
+      }
+
+      if (wouldExhaustAll) {
+        console.log(`[ThreadProtection] cooldown would exhaust all ${allEnabled.length} models — clearing cooldown exclusions`);
+        activeCooldownModels.clear();
+      } else {
+        for (const modelDbId of activeCooldownModels) {
+          skipModels.add(modelDbId);
+        }
+        console.log(`[ThreadProtection] excluding ${activeCooldownModels.size} model(s) from routing: [${[...activeCooldownModels].join(',')}]`);
       }
     }
   }
@@ -1264,6 +1307,73 @@ async function handleChatCompletion(
         let sawToolCalls = false;
         let streamStarted = false;
         let ttfbMs: number | null = null;
+        let lastChunkTimestamp = Date.now();
+        let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+        let streamAborted = false;
+
+        // Clean up routine — idempotent, safe to call multiple times
+        const cleanupStream = () => {
+          if (heartbeatInterval) {
+            clearInterval(heartbeatInterval);
+            heartbeatInterval = null;
+          }
+        };
+
+        // Set up heartbeat and stall monitor
+        heartbeatInterval = setInterval(() => {
+          const now = Date.now();
+
+          if (now - lastChunkTimestamp > streamKeepaliveConfig.MAX_STREAM_STALL_MS) {
+            // Stall detected — terminate the stream
+            console.warn(`[Proxy] Stream stalled for ${now - lastChunkTimestamp}ms — aborting socket`);
+            streamAborted = true;
+            cleanupStream();
+
+            if (streamStarted) {
+              // Mid-stream stall — write error frame and close
+              const payload = { error: { message: 'Upstream stream stalled', type: 'stream_timeout' } };
+              try {
+                if (responseStreamContext) {
+                  writeResponseStreamEvent(res, {
+                    type: 'response.failed',
+                    response: {
+                      id: responseStreamContext.responseId,
+                      status: 'failed',
+                      error: payload.error,
+                    },
+                  });
+                } else {
+                  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+                  res.write('data: [DONE]\n\n');;
+                }
+                res.end();
+              } catch { /* Socket already gone */ }
+            } else {
+              // Pre-stream stall — no headers sent yet, response is still retryable
+              // Send a 504 so the client gets a proper error signal
+              try {
+                res.status(504).json({
+                  error: { message: `Upstream provider stalled before yielding any data from ${route.displayName}`, type: 'stream_timeout' },
+                });
+              } catch { /* Socket already gone */ }
+            }
+          } else if (streamStarted) {
+            // Write an SSE comment to keep the socket alive across intermediate proxies
+            // Only write after SSE headers have been sent (streamStarted === true)
+            try {
+              res.write(': keep-alive\n\n');
+            } catch {
+              // Client disconnected — clean up
+              cleanupStream();
+            }
+          }
+        }, streamKeepaliveConfig.KEEPALIVE_INTERVAL_MS);
+
+        // Attach client-disconnect listener
+        req.on('close', () => {
+          cleanupStream();
+        });
+
         try {
           const gen = route.provider.streamChatCompletion(
             route.apiKey, normalizedMessages, route.modelId,
@@ -1271,6 +1381,12 @@ async function handleChatCompletion(
           );
 
           for await (const chunk of gen) {
+            // Update chunk timestamp to reset stall timer
+            lastChunkTimestamp = Date.now();
+
+            // If stall handler already terminated the stream, break out
+            if (streamAborted) break;
+
             if (!streamStarted) {
               ttfbMs = Date.now() - start;
               res.setHeader('Content-Type', 'text/event-stream');
@@ -1293,6 +1409,15 @@ async function handleChatCompletion(
               totalOutputTokens += Math.ceil(text.length / 4);
               res.write(`data: ${JSON.stringify(chunk)}\n\n`);
             }
+          }
+
+          // Clear heartbeat on successful loop completion
+          cleanupStream();
+
+          // If stall handler already ended the response, skip the normal completion path
+          if (streamAborted) {
+            logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, totalOutputTokens, Date.now() - start, ttfbMs, 'stream_stalled');
+            return;
           }
 
           // Check for truncated response content after stream completes.
@@ -1366,6 +1491,7 @@ async function handleChatCompletion(
           logRequest(route.platform, route.modelId, 'success', estimatedInputTokens, totalOutputTokens, Date.now() - start, ttfbMs, null);
           return;
         } catch (streamErr: any) {
+          cleanupStream();
           if (streamStarted) {
             // 5xx failure detection for mid-stream errors
             // LongCat: exclude entire provider immediately on any 5xx
