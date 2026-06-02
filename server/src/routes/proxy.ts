@@ -23,6 +23,10 @@ const MAX_RESPONSE_SESSIONS = 500;
 const MAX_MODEL_RESPONSE_LOG_CHARS = 6000;
 
 function getSessionKey(messages: ChatMessage[], routingMode: RoutingMode): string {
+  // Sticky sessions only apply to smart/auto-smart routing.
+  // Balanced/auto uses free routing on every request.
+  if (routingMode === 'balanced') return '';
+
   // Use the first user message as session identifier — clients like Hermes
   // re-send the full conversation each turn, so the first user message is
   // stable across turns. Hash the FULL message (not a 100-char slice) so
@@ -1216,6 +1220,23 @@ async function handleChatCompletion(
     }
   }
 
+  // Owl Alpha sticky cooldown: if the sticky model is on openrouter/owl-alpha and was used
+  // within the last 3 minutes, exclude owl-alpha from the bandit router for all
+  // other sessions. The current sticky session keeps its pinned owl-alpha route.
+  if (preferredModel) {
+    const db = getDb();
+    const prefRow = db.prepare('SELECT platform, model_id FROM models WHERE id = ?').get(preferredModel) as { platform: string; model_id: string } | undefined;
+    if (prefRow?.platform === 'openrouter' && prefRow?.model_id === 'owl-alpha') {
+      const cooldownSessionKey = getSessionKey(normalizedMessages, routingMode);
+      const cooldownEntry = cooldownSessionKey ? stickySessionMap.get(cooldownSessionKey) : undefined;
+      if (cooldownEntry && Date.now() - cooldownEntry.lastUsed < LONGCAT_STICKY_COOLDOWN_MS) {
+        const ageMs = Date.now() - cooldownEntry.lastUsed;
+        skipModels.add(preferredModel);
+        console.log(`[Sticky] Owl Alpha cooldown active — excluding openrouter/owl-alpha from bandit routing for other sessions | session=${cooldownSessionKey?.slice(0, 8)} | lastUsed=${ageMs}ms ago`);
+      }
+    }
+  }
+
   // Retry loop: skip bad keys and, for non-rate-limit errors, skip the model
   // entirely so the fallback chain can move to a different provider/model.
   const skipKeys = new Set<string>();
@@ -1302,12 +1323,15 @@ async function handleChatCompletion(
             const streamTextToCheck = responseStreamContext ? responseStreamContext.outputText : streamedText;
             if (isTruncatedResponse(streamTextToCheck)) {
               if (route.platform === 'longcat') {
-                // LongCat: exclude entire provider immediately on truncation
-                console.warn(`[Proxy] Truncated stream content detected from LongCat — banning LongCat provider for session`);
-                banPlatformFromSession(normalizedMessages, routingMode, 'longcat', route.modelDbId);
-                addProviderModelsToSkipModels(skipModels, 'longcat');
+                // LongCat: model-level ban
+                console.warn(`[Proxy] Truncated stream content detected from LongCat — skipping model ${route.modelId} for session`);
+                skipModels.add(route.modelDbId);
+              } else if (route.platform === 'openrouter' && route.modelId === 'owl-alpha') {
+                // Owl Alpha: model-level ban
+                console.warn(`[Proxy] Truncated stream content detected from Owl Alpha — skipping model ${route.modelId} for session`);
+                skipModels.add(route.modelDbId);
               } else {
-                // Non-LongCat: skip only this specific model, other models from same provider remain available
+                // Other providers: model-level ban
                 console.warn(`[Proxy] Truncated stream content detected from ${route.platform} — skipping model ${route.modelId} for session`);
                 skipModels.add(route.modelDbId);
               }
@@ -1373,9 +1397,29 @@ async function handleChatCompletion(
             const streamErrStatus = getErrorStatus(streamErr);
             if (streamErrStatus && isBanEligibleStatus(streamErrStatus)) {
               if (route.platform === 'longcat') {
-                console.warn(`[Proxy] Mid-stream 5xx from LongCat — excluding entire LongCat provider for session`);
-                banPlatformFromSession(normalizedMessages, routingMode, 'longcat', route.modelDbId);
-                addProviderModelsToSkipModels(skipModels, 'longcat');
+                console.warn(`[Proxy] Mid-stream 5xx from LongCat — skipping model ${route.modelId} for session`);
+                skipModels.add(route.modelDbId);
+                // Clear sticky if pinned to LongCat
+                if (preferredModel) {
+                  const db = getDb();
+                  const prefRow = db.prepare('SELECT model_id FROM models WHERE id = ?').get(preferredModel) as { model_id: string } | undefined;
+                  if (prefRow?.model_id === 'LongCat-2.0-Preview') {
+                    preferredModel = undefined;
+                    preferredKeyId = undefined;
+                  }
+                }
+              } else if (route.platform === 'openrouter' && route.modelId === 'owl-alpha') {
+                console.warn(`[Proxy] Mid-stream 5xx from Owl Alpha — skipping model ${route.modelId} for session`);
+                skipModels.add(route.modelDbId);
+                // Clear sticky if pinned to Owl Alpha
+                if (preferredModel) {
+                  const db = getDb();
+                  const prefRow = db.prepare('SELECT model_id FROM models WHERE id = ?').get(preferredModel) as { model_id: string } | undefined;
+                  if (prefRow?.model_id === 'owl-alpha') {
+                    preferredModel = undefined;
+                    preferredKeyId = undefined;
+                  }
+                }
               } else {
                 console.warn(`[Proxy] Mid-stream 5xx from ${route.platform} — skipping model ${route.modelId} only`);
                 skipModels.add(route.modelDbId);
@@ -1398,12 +1442,15 @@ async function handleChatCompletion(
             const combinedTruncationText = truncationTexts.join(' ');
             if (isTruncatedResponse(combinedTruncationText)) {
               if (route.platform === 'longcat') {
-                // LongCat: exclude entire provider immediately on truncation
-                console.warn(`[Proxy] Truncation error mid-stream from LongCat — excluding entire LongCat provider for session, ending stream gracefully`);
-                banPlatformFromSession(normalizedMessages, routingMode, 'longcat', route.modelDbId);
-                addProviderModelsToSkipModels(skipModels, 'longcat');
+                // LongCat: model-level ban
+                console.warn(`[Proxy] Truncation error mid-stream from LongCat — skipping model ${route.modelId} for session, ending stream gracefully`);
+                skipModels.add(route.modelDbId);
+              } else if (route.platform === 'openrouter' && route.modelId === 'owl-alpha') {
+                // Owl Alpha: model-level ban
+                console.warn(`[Proxy] Truncation error mid-stream from Owl Alpha — skipping model ${route.modelId} for session, ending stream gracefully`);
+                skipModels.add(route.modelDbId);
               } else {
-                // Non-LongCat: skip only this specific model
+                // Other providers: model-level ban
                 console.warn(`[Proxy] Truncation error mid-stream from ${route.platform} — skipping model ${route.modelId} only, ending stream gracefully`);
                 skipModels.add(route.modelDbId);
               }
@@ -1525,19 +1572,31 @@ async function handleChatCompletion(
       logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, null, err.message);
 
       // 5xx failure detection
-      // LongCat: exclude entire provider immediately on any 5xx
-      // Non-LongCat: skip only this specific model, other models from same provider remain available
+      // LongCat: model-level ban
+      // Owl Alpha: model-level ban
+      // Non-LongCat/Owl Alpha: skip only this specific model, other models from same provider remain available
       const errStatus = getErrorStatus(err);
       if (errStatus && isBanEligibleStatus(errStatus)) {
         if (route.platform === 'longcat') {
-          console.warn(`[Proxy] 5xx from LongCat — excluding entire LongCat provider for session`);
-          banPlatformFromSession(normalizedMessages, routingMode, 'longcat', route.modelDbId);
-          addProviderModelsToSkipModels(skipModels, 'longcat');
+          console.warn(`[Proxy] 5xx from LongCat — skipping model ${route.modelId} for session`);
+          skipModels.add(route.modelDbId);
           // Clear sticky if pinned to LongCat
           if (preferredModel) {
             const db = getDb();
-            const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
-            if (prefRow?.platform === 'longcat') {
+            const prefRow = db.prepare('SELECT model_id FROM models WHERE id = ?').get(preferredModel) as { model_id: string } | undefined;
+            if (prefRow?.model_id === 'LongCat-2.0-Preview') {
+              preferredModel = undefined;
+              preferredKeyId = undefined;
+            }
+          }
+        } else if (route.platform === 'openrouter' && route.modelId === 'owl-alpha') {
+          console.warn(`[Proxy] 5xx from Owl Alpha — skipping model ${route.modelId} for session`);
+          skipModels.add(route.modelDbId);
+          // Clear sticky if pinned to Owl Alpha
+          if (preferredModel) {
+            const db = getDb();
+            const prefRow = db.prepare('SELECT model_id FROM models WHERE id = ?').get(preferredModel) as { model_id: string } | undefined;
+            if (prefRow?.model_id === 'owl-alpha') {
               preferredModel = undefined;
               preferredKeyId = undefined;
             }
@@ -1549,21 +1608,34 @@ async function handleChatCompletion(
       }
 
       if (isRetryableError(err)) {
-        // LongCat: on any retryable error, exclude entire provider immediately
+        // LongCat: model-level ban
+        // Owl Alpha: model-level ban
         if (route.platform === 'longcat') {
-          console.warn(`[Proxy] Retryable error from LongCat — excluding entire LongCat provider for session`);
-          banPlatformFromSession(normalizedMessages, routingMode, 'longcat', route.modelDbId);
-          addProviderModelsToSkipModels(skipModels, 'longcat');
+          console.warn(`[Proxy] Retryable error from LongCat — skipping model ${route.modelId} for session`);
+          skipModels.add(route.modelDbId);
+          // Clear sticky if pinned to LongCat
           if (preferredModel) {
             const db = getDb();
-            const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
-            if (prefRow?.platform === 'longcat') {
+            const prefRow = db.prepare('SELECT model_id FROM models WHERE id = ?').get(preferredModel) as { model_id: string } | undefined;
+            if (prefRow?.model_id === 'LongCat-2.0-Preview') {
+              preferredModel = undefined;
+              preferredKeyId = undefined;
+            }
+          }
+        } else if (route.platform === 'openrouter' && route.modelId === 'owl-alpha') {
+          console.warn(`[Proxy] Retryable error from Owl Alpha — skipping model ${route.modelId} for session`);
+          skipModels.add(route.modelDbId);
+          // Clear sticky if pinned to Owl Alpha
+          if (preferredModel) {
+            const db = getDb();
+            const prefRow = db.prepare('SELECT model_id FROM models WHERE id = ?').get(preferredModel) as { model_id: string } | undefined;
+            if (prefRow?.model_id === 'owl-alpha') {
               preferredModel = undefined;
               preferredKeyId = undefined;
             }
           }
         } else {
-          // Non-LongCat: skip the specific key that failed
+          // Non-LongCat/Owl Alpha: skip the specific key that failed
           const skipId = `${route.platform}:${route.modelId}:${route.keyId}`;
           skipKeys.add(skipId);
           // Non-rate-limit, non-auth errors: skip the model so fallback moves to a different model
