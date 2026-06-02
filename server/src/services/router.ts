@@ -533,8 +533,8 @@ export function routeRequest(
       - getPenalty(entry.model_db_id) * PENALTY_SCORE_WEIGHT,
   })).sort((a, b) => b.effectiveScore - a.effectiveScore);
 
-  // LongCat preference in smart mode: move LongCat entries to front if any key has capacity
   if (routingMode === 'smart') {
+    let lcPreferred = false;
     const longcatEntries = sorted.filter(e => e.platform === 'longcat');
     if (longcatEntries.length > 0) {
       const sampleEntry = longcatEntries[0];
@@ -544,16 +544,15 @@ export function routeRequest(
         tpm: sampleEntry.tpm_limit,
         tpd: sampleEntry.tpd_limit,
       };
-      // T1.3: Use hasValidKeys() helper
       if (hasValidKeys(sampleEntry.platform, sampleEntry.model_id, lcLimits, estimatedTokens)) {
-        // Move all LongCat entries to front, preserving relative score order
         const others = sorted.filter(e => e.platform !== 'longcat');
         sorted.length = 0;
         sorted.push(...longcatEntries, ...others);
+        lcPreferred = true;
       }
     }
 
-    // T1.4: Owl Alpha smart preference — move openrouter/owl-alpha to front if any key has capacity
+    // Owl Alpha smart preference
     const owlAlphaEntry = sorted.find(e => e.platform === 'openrouter' && e.model_id === 'owl-alpha');
     if (owlAlphaEntry) {
       const oaLimits = {
@@ -563,20 +562,12 @@ export function routeRequest(
         tpd: owlAlphaEntry.tpd_limit,
       };
       if (hasValidKeys(owlAlphaEntry.platform, owlAlphaEntry.model_id, oaLimits, estimatedTokens)) {
-        // Remove owl-alpha from its current position
         const owlIdx = sorted.indexOf(owlAlphaEntry);
         if (owlIdx >= 0) {
           sorted.splice(owlIdx, 1);
         }
-        // Insert after LongCat entries (if any are at the front), preserving relative score order
-        const lastLongcatIdx = sorted.findIndex(e => e.platform !== 'longcat');
-        if (lastLongcatIdx === -1) {
-          // All entries are LongCat — append owl-alpha at the end
-          sorted.push(owlAlphaEntry);
-        } else {
-          // Insert right after the last LongCat entry
-          sorted.splice(lastLongcatIdx, 0, owlAlphaEntry);
-        }
+        const insertIdx = lcPreferred ? longcatEntries.length : 0;
+        sorted.splice(insertIdx, 0, owlAlphaEntry);
         console.log('[Router] Owl Alpha preference active — moving openrouter/owl-alpha to front');
       }
     }
