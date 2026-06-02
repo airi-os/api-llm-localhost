@@ -6,8 +6,6 @@ import {
   isSessionBannedFromPlatform,
   banPlatformFromSession,
   addProviderModelsToSkipModels,
-  recordConsecutiveFailure,
-  resetConsecutiveFailures,
   resetAllConsecutiveFailures,
   isTruncatedResponse,
   getSessionKey,
@@ -205,113 +203,37 @@ describe('Provider session ban functionality', () => {
     });
   });
 
-  // ---------- Test Suite 4: recordConsecutiveFailure ----------
-  describe('recordConsecutiveFailure', () => {
-    it('does not create entry if no sticky session and no modelDbId', () => {
+  // ---------- Test Suite 4: resetAllConsecutiveFailures ----------
+  describe('resetAllConsecutiveFailures', () => {
+    it('runs without error when sticky session exists', () => {
       const messages = makeMessages('Hello');
       const key = getSessionKey(messages, 'balanced');
-      recordConsecutiveFailure(messages, 'balanced', 'longcat', new Set());
-      expect(stickySessionMap.has(key)).toBe(false);
-    });
-
-    it('creates entry and increments counter on first 5xx when modelDbId provided', () => {
-      const messages = makeMessages('Hello');
-      const key = getSessionKey(messages, 'balanced');
-      const skipModels = new Set<number>();
-      recordConsecutiveFailure(messages, 'balanced', 'longcat', skipModels, 42);
-      expect(stickySessionMap.has(key)).toBe(true);
-      const entry = stickySessionMap.get(key);
-      expect(entry.consecutiveFailures.get('longcat')).toBe(1);
-      expect(entry.modelDbId).toBe(42);
-    });
-
-    it('increments counter to 2 and bans provider on second consecutive 5xx', () => {
-      const messages = makeMessages('Hello');
-      const key = getSessionKey(messages, 'balanced');
-      const skipModels = new Set<number>();
-      recordConsecutiveFailure(messages, 'balanced', 'longcat', skipModels, 42);
-      recordConsecutiveFailure(messages, 'balanced', 'longcat', skipModels, 42);
-      const entry = stickySessionMap.get(key);
-      expect(entry.bannedPlatforms.has('longcat')).toBe(true);
-    });
-
-    it('adds provider models to skipModels on ban', () => {
-      const messages = makeMessages('Hello');
-      const skipModels = new Set<number>();
-      const db = getDb();
-      const longcatRow = db.prepare("SELECT id FROM models WHERE platform = 'longcat' AND enabled = 1").get() as any;
-      expect(longcatRow).toBeDefined();
-      recordConsecutiveFailure(messages, 'balanced', 'longcat', skipModels, longcatRow.id);
-      recordConsecutiveFailure(messages, 'balanced', 'longcat', skipModels, longcatRow.id);
-      expect(skipModels.has(longcatRow.id)).toBe(true);
-    });
-
-    it('tracks different providers independently', () => {
-      const messages = makeMessages('Hello');
-      const key = getSessionKey(messages, 'balanced');
-      const skipModels = new Set<number>();
-      recordConsecutiveFailure(messages, 'balanced', 'longcat', skipModels, 42);
-      recordConsecutiveFailure(messages, 'balanced', 'groq', skipModels, 43);
-      const entry = stickySessionMap.get(key);
-      expect(entry.consecutiveFailures.get('longcat')).toBe(1);
-      expect(entry.consecutiveFailures.get('groq')).toBe(1);
-    });
-  });
-
-  // ---------- Test Suite 5: resetConsecutiveFailures ----------
-  describe('resetConsecutiveFailures', () => {
-    it('resets counter for specific provider', () => {
-      const messages = makeMessages('Hello');
-      const key = getSessionKey(messages, 'balanced');
-      const skipModels = new Set<number>();
-      recordConsecutiveFailure(messages, 'balanced', 'longcat', skipModels, 42);
-      recordConsecutiveFailure(messages, 'balanced', 'groq', skipModels, 43);
-      resetConsecutiveFailures(messages, 'balanced', 'longcat');
-      const entry = stickySessionMap.get(key);
-      expect(entry.consecutiveFailures.has('longcat')).toBe(false);
-      expect(entry.consecutiveFailures.get('groq')).toBe(1);
+      (stickySessionMap as Map<any, any>).set(key, { modelDbId: 1, lastUsed: Date.now() });
+      expect(() => resetAllConsecutiveFailures(messages, 'balanced')).not.toThrow();
     });
 
     it('no-op if no sticky session', () => {
       const messages = makeMessages('Hello');
-      expect(() => resetConsecutiveFailures(messages, 'balanced', 'longcat')).not.toThrow();
+      expect(() => resetAllConsecutiveFailures(messages, 'balanced')).not.toThrow();
     });
 
-    it('no-op if provider has no counter', () => {
+    it('preserves sticky entry when called', () => {
       const messages = makeMessages('Hello');
       const key = getSessionKey(messages, 'balanced');
-      (stickySessionMap as Map<any, any>).set(key, { modelDbId: 1, lastUsed: Date.now() });
-      expect(() => resetConsecutiveFailures(messages, 'balanced', 'longcat')).not.toThrow();
-    });
-  });
-
-  // ---------- Test Suite 6: resetAllConsecutiveFailures ----------
-  describe('resetAllConsecutiveFailures', () => {
-    it('clears all counters', () => {
-      const messages = makeMessages('Hello');
-      const key = getSessionKey(messages, 'balanced');
-      const skipModels = new Set<number>();
-      recordConsecutiveFailure(messages, 'balanced', 'longcat', skipModels, 42);
-      recordConsecutiveFailure(messages, 'balanced', 'groq', skipModels, 43);
+      (stickySessionMap as Map<any, any>).set(key, {
+        modelDbId: 1,
+        lastUsed: Date.now(),
+        bannedPlatforms: new Set(['groq']),
+      });
       resetAllConsecutiveFailures(messages, 'balanced');
       const entry = stickySessionMap.get(key);
-      expect(entry.consecutiveFailures.size).toBe(0);
-    });
-
-    it('no-op if no sticky session', () => {
-      const messages = makeMessages('Hello');
-      expect(() => resetAllConsecutiveFailures(messages, 'balanced')).not.toThrow();
-    });
-
-    it('no-op if no consecutive failures', () => {
-      const messages = makeMessages('Hello');
-      const key = getSessionKey(messages, 'balanced');
-      (stickySessionMap as Map<any, any>).set(key, { modelDbId: 1, lastUsed: Date.now() });
-      expect(() => resetAllConsecutiveFailures(messages, 'balanced')).not.toThrow();
+      expect(entry).toBeDefined();
+      expect(entry.modelDbId).toBe(1);
+      expect(entry.bannedPlatforms.has('groq')).toBe(true);
     });
   });
 
-  // ---------- Test Suite 7: isTruncatedResponse ----------
+  // ---------- Test Suite 5: isTruncatedResponse ----------
   describe('isTruncatedResponse', () => {
     const truncationSamples = [
       'Response was truncated due to length',
@@ -391,42 +313,42 @@ describe('Provider session ban functionality', () => {
       expect(skipModels.has(longcatRow.id)).toBe(true);
     });
 
-    it('two consecutive 5xx failures from same provider triggers ban', () => {
+    it('ban via banPlatformFromSession makes isSessionBannedFromPlatform return true', () => {
       const messages = makeMessages('Hello');
-      const key = getSessionKey(messages, 'balanced');
       const db = getDb();
       const longcatRow = db.prepare("SELECT id FROM models WHERE platform = 'longcat' AND enabled = 1").get() as any;
       expect(longcatRow).toBeDefined();
-      const skipModels = new Set<number>();
-      // First 5xx
-      recordConsecutiveFailure(messages, 'balanced', 'longcat', skipModels, longcatRow.id);
+      // Initially not banned
       expect(isSessionBannedFromPlatform(messages, 'balanced', 'longcat')).toBe(false);
-      // Second consecutive 5xx → ban
-      recordConsecutiveFailure(messages, 'balanced', 'longcat', skipModels, longcatRow.id);
+      // Ban via banPlatformFromSession (simulating what production code now does directly)
+      banPlatformFromSession(messages, 'balanced', 'longcat', longcatRow.id);
+      // Now should be banned
       expect(isSessionBannedFromPlatform(messages, 'balanced', 'longcat')).toBe(true);
     });
 
-    it('success resets consecutive failure counter', () => {
+    it('success via resetAllConsecutiveFailures runs without error', () => {
       const messages = makeMessages('Hello');
       const key = getSessionKey(messages, 'balanced');
-      const skipModels = new Set<number>();
-      recordConsecutiveFailure(messages, 'balanced', 'longcat', skipModels, 42);
-      const entry = stickySessionMap.get(key);
-      expect(entry.consecutiveFailures.get('longcat')).toBe(1);
-      // Simulate success
-      resetAllConsecutiveFailures(messages, 'balanced');
-      expect(entry.consecutiveFailures.size).toBe(0);
+      // Create a sticky entry
+      (stickySessionMap as Map<any, any>).set(key, { modelDbId: 1, lastUsed: Date.now() });
+      // Simulate success path calling resetAllConsecutiveFailures
+      expect(() => resetAllConsecutiveFailures(messages, 'balanced')).not.toThrow();
+      // Entry should still exist (resetAllConsecutiveFailures is a no-op)
+      expect(stickySessionMap.has(key)).toBe(true);
     });
 
-    it('5xx from provider A then success from provider B resets A counter', () => {
+    it('ban from provider A does not affect provider B', () => {
       const messages = makeMessages('Hello');
       const key = getSessionKey(messages, 'balanced');
-      const skipModels = new Set<number>();
-      recordConsecutiveFailure(messages, 'balanced', 'longcat', skipModels, 42);
-      // Success from any provider resets all counters
-      resetAllConsecutiveFailures(messages, 'balanced');
-      const entry = stickySessionMap.get(key);
-      expect(entry.consecutiveFailures.has('longcat')).toBe(false);
+      (stickySessionMap as Map<any, any>).set(key, {
+        modelDbId: 1,
+        lastUsed: Date.now(),
+      });
+      // Ban longcat
+      banPlatformFromSession(messages, 'balanced', 'longcat');
+      expect(isSessionBannedFromPlatform(messages, 'balanced', 'longcat')).toBe(true);
+      // groq should not be banned
+      expect(isSessionBannedFromPlatform(messages, 'balanced', 'groq')).toBe(false);
     });
   });
 

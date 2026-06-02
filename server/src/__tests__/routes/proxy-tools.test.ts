@@ -970,6 +970,8 @@ describe('LongCat sticky session cooldown', () => {
     expect(logSpy).not.toHaveBeenCalledWith(
       expect.stringContaining('[Sticky] LongCat cooldown active')
     );
+    // This session has no sticky LongCat, so it routes freely — verify it did route to a provider
+    expect(routedProvider).not.toBe('');
   });
 
   it('preserves sticky preference when LongCat cooldown has expired', async () => {

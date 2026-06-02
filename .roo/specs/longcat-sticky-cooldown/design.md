@@ -76,7 +76,7 @@ In [`routeRequest()`](server/src/services/router.ts:538-539):
 
 ```typescript
 for (const entry of sorted) {
-    if (skipModels?.has(entry.model_db_id)) continue;
+    if (skipModels?.has(entry.model_db_id) && entry.model_db_id !== preferredModelDbId) continue;
 ```
 
 The sticky model is forced to position 0 via `sorted.unshift(preferred)` at line 534. When the loop iterates, the sticky LongCat model is first in the array. The `skipModels` check skips it... **but wait** — this means the sticky session's LongCat model would also be skipped!

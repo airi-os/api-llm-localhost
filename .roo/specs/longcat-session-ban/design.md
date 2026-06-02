@@ -2,7 +2,7 @@
 
 ## Architecture Overview
 
-The ban mechanism extends the existing sticky session infrastructure in `proxy.ts` and integrates with the retry loop in `handleChatCompletion()`. The router (`router.ts`) requires minimal changes — only the LongCat smart-auto preference needs to respect session bans. All ban detection and session management happens in the proxy layer.
+The ban mechanism extends the existing sticky session infrastructure in `proxy.ts` and integrates with the retry loop in `handleChatCompletion()`. **No changes to `router.ts` are required.** All ban detection and session management is implemented in `proxy.ts` and integrated into `handleChatCompletion()`. The LongCat smart-auto preference in the router is unaffected — the `skipModels` set passed from the proxy effectively suppresses LongCat routing, and the existing boost logic is harmless when LongCat entries are skipped in the main loop.
 
 ```mermaid
 graph TD
@@ -82,7 +82,7 @@ function isSessionBannedFromPlatform(
 
 ### 2. `banPlatformFromSession()` — [`proxy.ts`](server/src/routes/proxy.ts)
 
-Records a platform ban in the sticky session. Called when truncation, auth, or rate-limit errors is detected on LongCat.
+Records a platform ban in the sticky session. Called when truncation, auth, or rate-limit errors are detected on LongCat.
 
 ```typescript
 function banPlatformFromSession(

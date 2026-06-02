@@ -71,9 +71,15 @@ The cooldown is purely time-based, using the existing `lastUsed` field in `stick
 
 No new Map, Set, or other data structure is needed. The cooldown check reads `lastUsed` from the existing `stickySessionMap` entry and adds to the existing `skipModels` Set.
 
-### NFR-3: No Router Changes
+### NFR-3: Router Changes Required
 
-The router already supports `skipModels` — no changes to [`server/src/services/router.ts`](server/src/services/router.ts) are needed. The cooldown only adds LongCat model IDs to the existing `skipModels` set in the proxy layer.
+The router's `skipModels` check in `routeRequest()` was modified to allow a sticky session's preferred model to bypass the skip. The check at line 539 now reads:
+
+```typescript
+if (skipModels?.has(entry.model_db_id) && entry.model_db_id !== preferredModelDbId) continue;
+```
+
+This ensures the sticky session's LongCat model is never skipped even when LongCat is in `skipModels`, while other sessions correctly skip LongCat models during cooldown.
 
 ### NFR-4: No UI Changes
 

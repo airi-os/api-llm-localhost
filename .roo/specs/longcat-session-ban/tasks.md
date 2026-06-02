@@ -13,8 +13,6 @@
   - Includes TTL check (expired sessions have no bans)
   - Add diagnostic logging
 
-  - Add diagnostic logging
-
 - [x] 3. Add `banPlatformFromSession()` function in `proxy.ts`
   - Add after `isSessionBannedFromPlatform()`
   - Parameters: `messages`, `routingMode`, `platform`
