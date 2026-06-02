@@ -1343,8 +1343,16 @@ async function handleChatCompletion(
           {
             const streamTextToCheck = responseStreamContext ? responseStreamContext.outputText : streamedText;
             if (isTruncatedResponse(streamTextToCheck)) {
-              console.warn(`[Proxy] Truncated stream content detected from ${route.platform} — banning ${route.platform} for session`);
-              banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
+              if (route.platform === 'longcat') {
+                // LongCat: exclude entire provider immediately on truncation
+                console.warn(`[Proxy] Truncated stream content detected from LongCat — banning LongCat provider for session`);
+                banPlatformFromSession(normalizedMessages, routingMode, 'longcat', route.modelDbId);
+                addProviderModelsToSkipModels(skipModels, 'longcat');
+              } else {
+                // Non-LongCat: skip only this specific model, other models from same provider remain available
+                console.warn(`[Proxy] Truncated stream content detected from ${route.platform} — skipping model ${route.modelId} for session`);
+                skipModels.add(route.modelDbId);
+              }
             }
           }
 
@@ -1401,10 +1409,19 @@ async function handleChatCompletion(
           return;
         } catch (streamErr: any) {
           if (streamStarted) {
-            // General 5xx consecutive failure detection for mid-stream errors
+            // 5xx failure detection for mid-stream errors
+            // LongCat: exclude entire provider immediately on any 5xx
+            // Non-LongCat: skip only this specific model, other models from same provider remain available
             const streamErrStatus = getErrorStatus(streamErr);
             if (streamErrStatus && isBanEligibleStatus(streamErrStatus)) {
-              recordConsecutiveFailure(normalizedMessages, routingMode, route.platform, skipModels, route.modelDbId);
+              if (route.platform === 'longcat') {
+                console.warn(`[Proxy] Mid-stream 5xx from LongCat — excluding entire LongCat provider for session`);
+                banPlatformFromSession(normalizedMessages, routingMode, 'longcat', route.modelDbId);
+                addProviderModelsToSkipModels(skipModels, 'longcat');
+              } else {
+                console.warn(`[Proxy] Mid-stream 5xx from ${route.platform} — skipping model ${route.modelId} only`);
+                skipModels.add(route.modelDbId);
+              }
             }
   
             // Generalized truncation detection for any provider (not just LongCat)
@@ -1422,8 +1439,16 @@ async function handleChatCompletion(
             truncationTexts.push(String(streamErr));
             const combinedTruncationText = truncationTexts.join(' ');
             if (isTruncatedResponse(combinedTruncationText)) {
-              console.warn(`[Proxy] Truncation error mid-stream from ${route.platform} — banning ${route.platform} for session, ending stream gracefully`);
-              banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
+              if (route.platform === 'longcat') {
+                // LongCat: exclude entire provider immediately on truncation
+                console.warn(`[Proxy] Truncation error mid-stream from LongCat — excluding entire LongCat provider for session, ending stream gracefully`);
+                banPlatformFromSession(normalizedMessages, routingMode, 'longcat', route.modelDbId);
+                addProviderModelsToSkipModels(skipModels, 'longcat');
+              } else {
+                // Non-LongCat: skip only this specific model
+                console.warn(`[Proxy] Truncation error mid-stream from ${route.platform} — skipping model ${route.modelId} only, ending stream gracefully`);
+                skipModels.add(route.modelDbId);
+              }
               try {
                 if (responseStreamContext) {
                   writeResponseStreamEvent(res, {
@@ -1507,30 +1532,56 @@ async function handleChatCompletion(
       const latency = Date.now() - start;
       logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, null, err.message);
 
-      // General 5xx consecutive failure detection — works for any provider
+      // 5xx failure detection
+      // LongCat: exclude entire provider immediately on any 5xx
+      // Non-LongCat: skip only this specific model, other models from same provider remain available
       const errStatus = getErrorStatus(err);
       if (errStatus && isBanEligibleStatus(errStatus)) {
-        recordConsecutiveFailure(normalizedMessages, routingMode, route.platform, skipModels, route.modelDbId);
-        // Only clear preferredModel/preferredKeyId if the provider was just banned
-        // (i.e., this was the 2nd consecutive 5xx). Don't clear on the first failure.
-        if (preferredModel && isSessionBannedFromPlatform(normalizedMessages, routingMode, route.platform)) {
-          const db = getDb();
-          const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
-          if (prefRow?.platform === route.platform) {
-            preferredModel = undefined;
-            preferredKeyId = undefined;
+        if (route.platform === 'longcat') {
+          console.warn(`[Proxy] 5xx from LongCat — excluding entire LongCat provider for session`);
+          banPlatformFromSession(normalizedMessages, routingMode, 'longcat', route.modelDbId);
+          addProviderModelsToSkipModels(skipModels, 'longcat');
+          // Clear sticky if pinned to LongCat
+          if (preferredModel) {
+            const db = getDb();
+            const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
+            if (prefRow?.platform === 'longcat') {
+              preferredModel = undefined;
+              preferredKeyId = undefined;
+            }
           }
+        } else {
+          console.warn(`[Proxy] 5xx from ${route.platform} — skipping model ${route.modelId} only`);
+          skipModels.add(route.modelDbId);
         }
       }
 
       if (isRetryableError(err)) {
-        const skipId = `${route.platform}:${route.modelId}:${route.keyId}`;
-        skipKeys.add(skipId);
-        if (shouldSkipModelOnRetry(err)) {
-          skipModels.add(route.modelDbId);
-        }
-        if (isRateLimitError(err)) {
-          setCooldown(route.platform, route.modelId, route.keyId, 120_000);
+        // LongCat: on any retryable error, exclude entire provider immediately
+        if (route.platform === 'longcat') {
+          console.warn(`[Proxy] Retryable error from LongCat — excluding entire LongCat provider for session`);
+          banPlatformFromSession(normalizedMessages, routingMode, 'longcat', route.modelDbId);
+          addProviderModelsToSkipModels(skipModels, 'longcat');
+          if (preferredModel) {
+            const db = getDb();
+            const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
+            if (prefRow?.platform === 'longcat') {
+              preferredModel = undefined;
+              preferredKeyId = undefined;
+            }
+          }
+        } else {
+          // Non-LongCat: skip the specific key that failed
+          const skipId = `${route.platform}:${route.modelId}:${route.keyId}`;
+          skipKeys.add(skipId);
+          // Non-rate-limit, non-auth errors: skip the model so fallback moves to a different model
+          if (shouldSkipModelOnRetry(err)) {
+            skipModels.add(route.modelDbId);
+          }
+          // Rate-limit errors: cooldown this key but allow other keys for the same model
+          if (isRateLimitError(err)) {
+            setCooldown(route.platform, route.modelId, route.keyId, 120_000);
+          }
         }
         // Auth errors (401/403): clear the sticky key for this session
         // so the retry unpins the broken key and falls through to round-robin.
