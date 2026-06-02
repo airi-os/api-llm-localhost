@@ -159,6 +159,14 @@ interface ModelStats {
 
 export type RoutingMode = 'balanced' | 'smart';
 
+// ── Balanced mode exclusions ────────────────────────────────────────────────
+// LongCat and Owl Alpha are excluded from balanced auto-routing so they are
+// only reachable via explicit model request or smart-mode preference.
+const EXCLUDED_FROM_BALANCED = new Set<string>(['longcat']);
+const EXCLUDED_MODELS_FROM_BALANCED = new Map<string, Set<string>>([
+  ['openrouter', new Set(['owl-alpha'])],
+]);
+
 let statsCache: Map<string, ModelStats> | null = null;
 let statsCacheTime = 0;
 let maxTokPerSec = 0;
@@ -439,6 +447,26 @@ export function getAllPenalties(): Array<{ modelDbId: number; count: number; pen
   return result.sort((a, b) => b.penalty - a.penalty);
 }
 
+// ── Key capacity helper ──────────────────────────────────────────────────────
+// Checks whether any enabled, non-invalid key for a given platform/model has
+// capacity (not on cooldown, can make a request, can use the estimated tokens).
+function hasValidKeys(
+  platform: string,
+  modelId: string,
+  limits: { rpm: number | null; rpd: number | null; tpm: number | null; tpd: number | null },
+  estimatedTokens: number,
+): boolean {
+  const db = getDb();
+  const keys = db.prepare(
+    'SELECT * FROM api_keys WHERE platform = ? AND enabled = 1 AND status != ?'
+  ).all(platform, 'invalid') as KeyRow[];
+  return keys.some(key =>
+    !isOnCooldown(platform, modelId, key.id) &&
+    canMakeRequest(platform, modelId, key.id, limits) &&
+    canUseTokens(platform, modelId, key.id, estimatedTokens, limits)
+  );
+}
+
 /**
  * Route a request to the best available model.
  *
@@ -477,10 +505,20 @@ export function routeRequest(
     WHERE fc.enabled = 1
   `).all() as ChainRow[];
 
-  const intelligenceRanks = chain.map(entry => entry.intelligence_rank);
+  // T1.2: In balanced mode, exclude LongCat platform and Owl Alpha model
+  const filteredChain = routingMode === 'balanced'
+    ? chain.filter(entry => {
+        if (EXCLUDED_FROM_BALANCED.has(entry.platform)) return false;
+        const excludedModels = EXCLUDED_MODELS_FROM_BALANCED.get(entry.platform);
+        if (excludedModels?.has(entry.model_id)) return false;
+        return true;
+      })
+    : chain;
+
+  const intelligenceRanks = filteredChain.map(entry => entry.intelligence_rank);
   const minIntelligenceRank = Math.min(...intelligenceRanks);
   const maxIntelligenceRank = Math.max(...intelligenceRanks);
-  const sorted = chain.map(entry => ({
+  const sorted = filteredChain.map(entry => ({
     ...entry,
     effectiveScore:
       (routingMode === 'smart'
@@ -499,29 +537,47 @@ export function routeRequest(
   if (routingMode === 'smart') {
     const longcatEntries = sorted.filter(e => e.platform === 'longcat');
     if (longcatEntries.length > 0) {
-      // Check if any LongCat key passes rate-limit checks
-      const lcKeys = db.prepare(
-        'SELECT * FROM api_keys WHERE platform = ? AND enabled = 1 AND status != ?'
-      ).all('longcat', 'invalid') as KeyRow[];
-      if (lcKeys.length > 0) {
-        const sampleEntry = longcatEntries[0];
-        const lcLimits = {
-          rpm: sampleEntry.rpm_limit,
-          rpd: sampleEntry.rpd_limit,
-          tpm: sampleEntry.tpm_limit,
-          tpd: sampleEntry.tpd_limit,
-        };
-        const hasCapacity = lcKeys.some(key =>
-          !isOnCooldown(sampleEntry.platform, sampleEntry.model_id, key.id) &&
-          canMakeRequest(sampleEntry.platform, sampleEntry.model_id, key.id, lcLimits) &&
-          canUseTokens(sampleEntry.platform, sampleEntry.model_id, key.id, estimatedTokens, lcLimits)
-        );
-        if (hasCapacity) {
-          // Move all LongCat entries to front, preserving relative score order
-          const others = sorted.filter(e => e.platform !== 'longcat');
-          sorted.length = 0;
-          sorted.push(...longcatEntries, ...others);
+      const sampleEntry = longcatEntries[0];
+      const lcLimits = {
+        rpm: sampleEntry.rpm_limit,
+        rpd: sampleEntry.rpd_limit,
+        tpm: sampleEntry.tpm_limit,
+        tpd: sampleEntry.tpd_limit,
+      };
+      // T1.3: Use hasValidKeys() helper
+      if (hasValidKeys(sampleEntry.platform, sampleEntry.model_id, lcLimits, estimatedTokens)) {
+        // Move all LongCat entries to front, preserving relative score order
+        const others = sorted.filter(e => e.platform !== 'longcat');
+        sorted.length = 0;
+        sorted.push(...longcatEntries, ...others);
+      }
+    }
+
+    // T1.4: Owl Alpha smart preference — move openrouter/owl-alpha to front if any key has capacity
+    const owlAlphaEntry = sorted.find(e => e.platform === 'openrouter' && e.model_id === 'owl-alpha');
+    if (owlAlphaEntry) {
+      const oaLimits = {
+        rpm: owlAlphaEntry.rpm_limit,
+        rpd: owlAlphaEntry.rpd_limit,
+        tpm: owlAlphaEntry.tpm_limit,
+        tpd: owlAlphaEntry.tpd_limit,
+      };
+      if (hasValidKeys(owlAlphaEntry.platform, owlAlphaEntry.model_id, oaLimits, estimatedTokens)) {
+        // Remove owl-alpha from its current position
+        const owlIdx = sorted.indexOf(owlAlphaEntry);
+        if (owlIdx >= 0) {
+          sorted.splice(owlIdx, 1);
         }
+        // Insert after LongCat entries (if any are at the front), preserving relative score order
+        const lastLongcatIdx = sorted.findIndex(e => e.platform !== 'longcat');
+        if (lastLongcatIdx === -1) {
+          // All entries are LongCat — append owl-alpha at the end
+          sorted.push(owlAlphaEntry);
+        } else {
+          // Insert right after the last LongCat entry
+          sorted.splice(lastLongcatIdx, 0, owlAlphaEntry);
+        }
+        console.log('[Router] Owl Alpha preference active — moving openrouter/owl-alpha to front');
       }
     }
   }
