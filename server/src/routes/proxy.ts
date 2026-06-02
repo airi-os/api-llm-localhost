@@ -159,7 +159,7 @@ function isTruncatedResponse(errOrContent: any): boolean {
   return lower.includes('truncated') || lower.includes('truncation') ||
     lower.includes('context_length_exceeded') || lower.includes('token_limit') ||
     lower.includes('maximum length') || lower.includes('response_length_limit') ||
-    lower.includes('conflict');
+    lower.includes('cut off') || lower.includes('truncate')
 }
 
 // Exported for testing purposes only
