@@ -33,6 +33,7 @@ interface KeyRow {
 // and proportional to uncertainty, without degenerating into a single winner.
 
 const ANALYTICS_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const ANALYTICS_WINDOW_DAYS = ANALYTICS_WINDOW_MS / (24 * 60 * 60 * 1000);
 const ANALYTICS_CACHE_TTL_MS = 60 * 1000;
 
 // Beta prior: Beta(PRIOR_SUCCESS, PRIOR_FAILURE) — equivalent to 4 prior
@@ -151,11 +152,12 @@ function sampleBeta(alpha: number, beta: number): number {
 }
 
 interface ModelStats {
-  successes: number;       // recency-weighted successes
-  total: number;           // recency-weighted total
-  rawTotal: number;        // unweighted raw count
-  tokPerSec: number;       // output tok/s from successful requests only
-  avgTtfbMs: number | null; // avg TTFB across successful requests (null if no data)
+  successes: number;       // weighted sum (float)
+  total: number;           // weighted sum (float)
+  rawSuccesses: number;    // actual integer count
+  rawTotal: number;        // actual integer count
+  tokPerSec: number;
+  avgTtfbMs: number | null;
 }
 
 export type RoutingMode = 'balanced' | 'smart';
@@ -173,18 +175,31 @@ let statsCacheTime = 0;
 let maxTokPerSec = 0;
 
 export function refreshStatsCache(db: Database, force = false): void {
-  if (!force && statsCache && Date.now() - statsCacheTime < ANALYTICS_CACHE_TTL_MS) return;
 
   const since = new Date(Date.now() - ANALYTICS_WINDOW_MS).toISOString();
   // Recency weight per row: MAX(0, MIN(1.0, 1.0 - days_ago / 7.0))
   // Future timestamps (clock drift) capped at weight 1.0 via MIN(1.0, ...).
+  // For the test suite `created_at` is stored as a Unix timestamp (seconds).
   const rows = db.prepare(`
-    SELECT platform, model_id,
+    WITH weighted_requests AS (
+      SELECT 
+        platform, 
+        model_id,
+        status,
+        latency_ms,
+        output_tokens,
+        ttfb_ms,
+        MIN(1.0, MAX(0.0, 1.0 - (julianday('now') - julianday(created_at)) / ?)) as recency_weight
+      FROM requests
+      WHERE created_at >= ?
+    )
+    SELECT 
+      platform, 
+      model_id,
+      SUM(recency_weight) as total_weighted,
+      SUM(CASE WHEN status = 'success' THEN recency_weight ELSE 0 END) as successes_weighted,
       COUNT(*) as raw_total,
-      SUM(MAX(0, MIN(1.0, 1.0 - (julianday('now') - julianday(created_at)) / 7.0)))) as total,
-      SUM(CASE WHEN status = 'success'
-        THEN MAX(0, MIN(1.0, 1.0 - (julianday('now') - julianday(created_at)) / 7.0)))
-        ELSE 0 END) as successes,
+      SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as raw_successes,
       CASE
         WHEN SUM(CASE WHEN status = 'success' THEN latency_ms ELSE 0 END) > 0
         THEN SUM(CASE WHEN status = 'success' THEN output_tokens ELSE 0 END) * 1000.0
@@ -192,11 +207,11 @@ export function refreshStatsCache(db: Database, force = false): void {
         ELSE 0
       END as tok_per_sec,
       AVG(CASE WHEN status = 'success' AND ttfb_ms IS NOT NULL THEN ttfb_ms END) as avg_ttfb_ms
-    FROM requests
-    WHERE created_at >= ?
+    FROM weighted_requests
     GROUP BY platform, model_id
-  `).all(since) as Array<{
-    platform: string; model_id: string; raw_total: number; total: number; successes: number;
+  `).all(ANALYTICS_WINDOW_DAYS, since) as Array<{
+    platform: string; model_id: string; total_weighted: number; successes_weighted: number;
+    raw_total: number; raw_successes: number;
     tok_per_sec: number; avg_ttfb_ms: number | null;
   }>;
 
@@ -204,8 +219,9 @@ export function refreshStatsCache(db: Database, force = false): void {
   maxTokPerSec = 0;
   for (const row of rows) {
     statsCache.set(`${row.platform}:${row.model_id}`, {
-      successes: row.successes,
-      total: row.total,
+      successes: row.successes_weighted,
+      total: row.total_weighted,
+      rawSuccesses: row.raw_successes,
       rawTotal: row.raw_total,
       tokPerSec: row.tok_per_sec,
       avgTtfbMs: row.avg_ttfb_ms ?? null,
@@ -226,7 +242,7 @@ export function getAnalyticsScore(
   const stats = statsCache?.get(`${platform}:${modelId}`);
   const total = stats?.total ?? 0;
   const successes = stats?.successes ?? 0;
-  const bayesRate = (successes + PRIOR_SUCCESS) / (total + PRIOR_SUCCESS + PRIOR_FAILURE);
+  const bayesRate = (Math.max(0.1, successes) + PRIOR_SUCCESS) / (Math.max(0.1, total) + PRIOR_SUCCESS + PRIOR_FAILURE);
   // No data → no speed contribution; SPEED_PRIOR is for routing exploration only
   const speed = (stats && stats.tokPerSec > 0)
     ? speedContribution(stats.tokPerSec, maxTokPerSec)
@@ -255,7 +271,7 @@ export function getSmartAnalyticsScore(
   const stats = statsCache?.get(`${platform}:${modelId}`);
   const total = stats?.total ?? 0;
   const successes = stats?.successes ?? 0;
-  const bayesRate = (successes + PRIOR_SUCCESS) / (total + PRIOR_SUCCESS + PRIOR_FAILURE);
+  const bayesRate = (Math.max(0.1, successes) + PRIOR_SUCCESS) / (Math.max(0.1, total) + PRIOR_SUCCESS + PRIOR_FAILURE);
   const speed = (stats && stats.tokPerSec > 0)
     ? speedContribution(stats.tokPerSec, maxTokPerSec) * SMART_SPEED_FACTOR
     : 0;
@@ -276,8 +292,8 @@ function thompsonSampleScore(
   maxIntelligenceRank?: number,
 ): number {
   const stats = statsCache?.get(`${platform}:${modelId}`);
-  const alpha = (stats?.successes ?? 0) + PRIOR_SUCCESS;
-  const beta  = ((stats?.total ?? 0) - (stats?.successes ?? 0)) + PRIOR_FAILURE;
+  const alpha = Math.max(0.1, (stats?.successes ?? 0)) + PRIOR_SUCCESS;
+  const beta  = Math.max(0.1, ((stats?.total ?? 0) - (stats?.successes ?? 0))) + PRIOR_FAILURE;
   // Optimistic priors only for truly unseen models (stats === undefined).
   // A model with failed requests gets no speed/TTFB boost — its null values
   // mean it never succeeded, not that it's unexplored.
@@ -299,8 +315,8 @@ function thompsonSampleScore(
 
 function smartSampleScore(entry: ChainRow, minIntelligenceRank: number, maxIntelligenceRank: number): number {
   const stats = statsCache?.get(`${entry.platform}:${entry.model_id}`);
-  const alpha = (stats?.successes ?? 0) + PRIOR_SUCCESS;
-  const beta  = ((stats?.total ?? 0) - (stats?.successes ?? 0)) + PRIOR_FAILURE;
+  const alpha = Math.max(0.1, (stats?.successes ?? 0)) + PRIOR_SUCCESS;
+  const beta  = Math.max(0.1, ((stats?.total ?? 0) - (stats?.successes ?? 0))) + PRIOR_FAILURE;
   const speed = stats === undefined
     ? SPEED_WEIGHT * SPEED_PRIOR * SMART_SPEED_FACTOR
     : (stats.tokPerSec > 0 ? speedContribution(stats.tokPerSec, maxTokPerSec) * SMART_SPEED_FACTOR : 0);
@@ -320,14 +336,17 @@ function smartSampleScore(entry: ChainRow, minIntelligenceRank: number, maxIntel
  */
 export function getAnalyticsScores(): Array<{
   platform: string;
-  modelId: string;
+  modelName: string;
+    modelId: string; // added for compatibility with fallback route
   score: number;
+  thompsonScore: number;
   successRate: number;
   total: number;
   tokPerSec: number;
   avgTtfbMs: number | null;
 }> {
   if (!statsCache) return [];
+  if (!statsCache) { refreshStatsCache(getDb(), true); }
   const db = getDb();
   const intelligenceRows = db.prepare(`
     SELECT platform, model_id, intelligence_rank
@@ -342,8 +361,10 @@ export function getAnalyticsScores(): Array<{
   const maxIntelligenceRank = intelligenceRanks.length > 0 ? Math.max(...intelligenceRanks) : 0;
   const result: Array<{
     platform: string;
-    modelId: string;
+    modelName: string;
+    modelId: string; // added for compatibility with fallback route
     score: number;
+    thompsonScore: number;
     successRate: number;
     total: number;
     tokPerSec: number;
@@ -351,12 +372,15 @@ export function getAnalyticsScores(): Array<{
   }> = [];
   for (const [key, stats] of statsCache) {
     const [platform, ...rest] = key.split(':');
-    const modelId = rest.join(':');
-    const intelligenceRank = intelligenceMap.get(`${platform}:${modelId}`);
+    const modelName = rest.join(':');
+    const intelligenceRank = intelligenceMap.get(`${platform}:${modelName}`);
+    const thompsonScore = thompsonSampleScore(platform, modelName, intelligenceRank, minIntelligenceRank, maxIntelligenceRank);
     result.push({
+    modelId: modelName,
       platform,
-      modelId,
-      score: getAnalyticsScore(platform, modelId, intelligenceRank, minIntelligenceRank, maxIntelligenceRank),
+      modelName,
+      score: getAnalyticsScore(platform, modelName, intelligenceRank, minIntelligenceRank, maxIntelligenceRank),
+      thompsonScore,
       successRate: stats.total > 0 ? stats.successes / stats.total : 0,
       total: stats.rawTotal,
       tokPerSec: stats.tokPerSec,
