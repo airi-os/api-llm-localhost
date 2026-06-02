@@ -151,9 +151,10 @@ function sampleBeta(alpha: number, beta: number): number {
 }
 
 interface ModelStats {
-  successes: number;
-  total: number;
-  tokPerSec: number;    // output tok/s from successful requests only
+  successes: number;       // recency-weighted successes
+  total: number;           // recency-weighted total
+  rawTotal: number;        // unweighted raw count
+  tokPerSec: number;       // output tok/s from successful requests only
   avgTtfbMs: number | null; // avg TTFB across successful requests (null if no data)
 }
 
@@ -175,10 +176,15 @@ export function refreshStatsCache(db: Database, force = false): void {
   if (!force && statsCache && Date.now() - statsCacheTime < ANALYTICS_CACHE_TTL_MS) return;
 
   const since = new Date(Date.now() - ANALYTICS_WINDOW_MS).toISOString();
+  // Recency weight per row: MAX(0, MIN(1.0, 1.0 - days_ago / 7.0))
+  // Future timestamps (clock drift) capped at weight 1.0 via MIN(1.0, ...).
   const rows = db.prepare(`
     SELECT platform, model_id,
-      COUNT(*) as total,
-      SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as successes,
+      COUNT(*) as raw_total,
+      SUM(MAX(0, MIN(1.0, 1.0 - (julianday('now') - julianday(created_at)) / 7.0)))) as total,
+      SUM(CASE WHEN status = 'success'
+        THEN MAX(0, MIN(1.0, 1.0 - (julianday('now') - julianday(created_at)) / 7.0)))
+        ELSE 0 END) as successes,
       CASE
         WHEN SUM(CASE WHEN status = 'success' THEN latency_ms ELSE 0 END) > 0
         THEN SUM(CASE WHEN status = 'success' THEN output_tokens ELSE 0 END) * 1000.0
@@ -190,7 +196,7 @@ export function refreshStatsCache(db: Database, force = false): void {
     WHERE created_at >= ?
     GROUP BY platform, model_id
   `).all(since) as Array<{
-    platform: string; model_id: string; total: number; successes: number;
+    platform: string; model_id: string; raw_total: number; total: number; successes: number;
     tok_per_sec: number; avg_ttfb_ms: number | null;
   }>;
 
@@ -200,6 +206,7 @@ export function refreshStatsCache(db: Database, force = false): void {
     statsCache.set(`${row.platform}:${row.model_id}`, {
       successes: row.successes,
       total: row.total,
+      rawTotal: row.raw_total,
       tokPerSec: row.tok_per_sec,
       avgTtfbMs: row.avg_ttfb_ms ?? null,
     });
@@ -351,7 +358,7 @@ export function getAnalyticsScores(): Array<{
       modelId,
       score: getAnalyticsScore(platform, modelId, intelligenceRank, minIntelligenceRank, maxIntelligenceRank),
       successRate: stats.total > 0 ? stats.successes / stats.total : 0,
-      total: stats.total,
+      total: stats.rawTotal,
       tokPerSec: stats.tokPerSec,
       avgTtfbMs: stats.avgTtfbMs,
     });
