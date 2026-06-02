@@ -810,8 +810,11 @@ describe('LongCat sticky session cooldown', () => {
     app = createApp();
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     (stickySessionMap as Map<any, any>).clear();
+    // Dynamic import to get the same module instance used by the running app
+    const { transientModelCooldowns: cooldowns } = await import('../../routes/proxy.js');
+    (cooldowns as Map<any, any>).clear();
     const db = getDb();
     db.prepare('DELETE FROM api_keys').run();
     db.prepare('DELETE FROM requests').run();
