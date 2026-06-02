@@ -120,15 +120,20 @@ export class CloudflareProvider extends BaseProvider {
         if (!trimmed || !trimmed.startsWith('data: ')) continue;
         const data = trimmed.slice(6);
         if (data === '[DONE]') return;
+
+        let parsed: ChatCompletionChunk;
         try {
-          const parsed = JSON.parse(data) as ChatCompletionChunk;
-          if (this.isWrappedError(parsed)) {
-            this.throwWrappedError(parsed);
-          }
-          yield parsed;
+          parsed = JSON.parse(data) as ChatCompletionChunk;
         } catch {
           // Skip malformed chunks
+          continue;
         }
+
+        // Check for wrapped errors outside of the JSON parse try/catch block
+        if (this.isWrappedError(parsed)) {
+          this.throwWrappedError(parsed);
+        }
+        yield parsed;
       }
     }
   }

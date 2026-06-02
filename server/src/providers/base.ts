@@ -113,8 +113,24 @@ export abstract class BaseProvider {
     if (typeof body === 'string') return body || fallback;
     if (!body || typeof body !== 'object') return fallback;
 
-    const err = body as { error?: { message?: string }; errors?: Array<{ message?: string }>; message?: string };
-    return err.error?.message ?? err.errors?.[0]?.message ?? err.message ?? fallback;
+    const err = body as { error?: unknown; errors?: Array<{ message?: string }>; message?: string };
+
+    // Handle string error payload: e.g., {"error": "Rate limit exceeded"}
+    if (err.error && typeof err.error === 'string') {
+      return err.error;
+    }
+
+    // Handle object error payload with message field
+    if (
+      err.error &&
+      typeof err.error === 'object' &&
+      'message' in err.error &&
+      typeof (err.error as any).message === 'string'
+    ) {
+      return (err.error as any).message;
+    }
+
+    return err.errors?.[0]?.message ?? err.message ?? fallback;
   }
 
   protected makeId(): string {
@@ -139,10 +155,22 @@ export abstract class BaseProvider {
     const error = new Error(
       `${this.name} API error (wrapped in 200): ${message}`,
     ) as ProviderApiError;
-    error.status =
-      typeof errPayload === 'object' && errPayload !== null && 'code' in (errPayload as Record<string, unknown>)
-        ? Number((errPayload as Record<string, unknown>).code)
-        : 200;
+
+    // Guard against non-numeric codes (e.g. "rate_limit_error" -> NaN)
+    let statusCode = 200;
+    if (
+      typeof errPayload === 'object' &&
+      errPayload !== null &&
+      'code' in (errPayload as Record<string, unknown>)
+    ) {
+      const codeVal = (errPayload as Record<string, unknown>).code;
+      const num = Number(codeVal);
+      if (!isNaN(num)) {
+        statusCode = num;
+      }
+    }
+
+    error.status = statusCode;
     error.provider = this.name;
     error.responseBody = body;
     throw error;
