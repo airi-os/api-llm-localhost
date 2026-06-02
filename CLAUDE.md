@@ -19,6 +19,7 @@ pnpm --filter server start                      # start from compiled dist
 **Auto routing modes** (use as the model name in API requests):
 - `freellmapi/auto` — default; balanced routing optimizing for speed, reliability, and intelligence
 - `freellmapi/auto-smart` — prioritizes model capability (60% intelligence weight) for complex reasoning tasks
+- `freellmapi/auto-fast` — prioritizes raw speed (3× speed weight, 1.5× TTFB weight, 0.02 intelligence weight); routes to fast pool first, borrows from balanced pool as fallback
 
 ## Non-obvious invariants
 
@@ -26,6 +27,7 @@ pnpm --filter server start                      # start from compiled dist
 - **Two-key auth**: the admin key gates `/api/*`; the unified API key gates `/v1/*`. They must never overlap — using one against the wrong route returns 401.
 - **Adding a provider**: touch shared types, provider registry, DB catalog migration, and the keys route allowlist.
 - **429 penalty**: model-level bandit penalty fires only when *all* keys for that model are exhausted — a single key failing does not penalise the model.
+- **Pool classification**: models are classified into Fast (top 40% speed), Smart (top 40% intelligence), or Balanced pools. Fast mode routes to Fast pool first, then borrows from Balanced pool. The `classifyModel()` function in `router.ts` handles this.
 
 ## Environment
 

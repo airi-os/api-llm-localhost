@@ -71,6 +71,16 @@ export interface FallbackEntry {
   enabled: boolean;
 }
 
+// ---- Routing Types ----
+
+export type RoutingMode = 'balanced' | 'smart' | 'fast';
+
+export enum ModelPool {
+  Fast = 'fast',
+  Balanced = 'balanced',
+  Smart = 'smart',
+}
+
 // ---- OpenAI-Compatible Types ----
 
 export interface ChatToolCallFunction {
@@ -102,11 +112,11 @@ export type ChatToolChoice =
   | 'auto'
   | 'required'
   | {
-    type: 'function';
-    function: {
-      name: string;
+      type: 'function';
+      function: {
+        name: string;
+      };
     };
-  };
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';

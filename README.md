@@ -66,7 +66,7 @@ The problem is that stacking them by hand is painful: fourteen different SDKs, f
 - **Streaming and non-streaming** — Server-Sent Events for `stream: true`, JSON response otherwise. Every provider adapter implements both.
 - **Tool calling** — OpenAI-style `tools` / `tool_choice` requests are passed through, and assistant `tool_calls` + `tool` role follow-up messages round-trip across providers.
 - **Thompson-sampling router** — Each request draws a score from each model's Beta posterior (`Beta(successes + 2, failures + 2)`), adds a normalized tok/s speed term, and subtracts any active rate-limit penalty. The stochastic draw means better models win more often without locking out unproven ones — exploration is automatic and proportional to uncertainty. The dashboard shows the deterministic Bayesian mean of the same posterior for human readability. Rate-limit penalties are model-scoped but only applied once all keys for that model are exhausted — a single key hitting a 429 does not down-rank the model if other keys remain available.
-- **Two routing modes** — `freellmapi/auto` (default) balances speed, reliability, and intelligence. `freellmapi/auto-smart` prioritizes model capability (60% intelligence weight) over raw speed — better for complex reasoning tasks where you want the smartest available model even if it streams more slowly.
+- **Three routing modes** — `freellmapi/auto` (default) balances speed, reliability, and intelligence. `freellmapi/auto-smart` prioritizes model capability (60% intelligence weight) over raw speed — better for complex reasoning tasks. `freellmapi/auto-fast` prioritizes raw speed (3× speed weight, 1.5× TTFB weight, minimal intelligence consideration) — ideal for latency-sensitive applications.
 - **Automatic fallover** — If the chosen provider returns a 429, 5xx, or times out, the router skips it, puts the key on a short cooldown, and retries on the next model in your fallback chain (up to 20 attempts).
 - **Per-key rate tracking** — RPM, RPD, TPM, and TPD counters per `(platform, model, key)` so the router always picks a key that's under its caps.
 - **Sticky sessions** — Multi-turn conversations keep talking to the same model for 30 minutes to avoid the hallucination spike that comes from mid-conversation model switches.
@@ -232,6 +232,17 @@ print(final.choices[0].message.content)
 ```
 
 Works with `stream=True` as well — you'll get `delta.tool_calls` chunks followed by a `finish_reason: "tool_calls"` close. Under the hood, OpenAI-compatible providers (Groq, Cerebras, SambaNova, Mistral, OpenRouter, GitHub Models, HuggingFace, Cloudflare, Cohere compat) get the request passed through; Gemini requests get translated into Google's `functionDeclarations` / `functionResponse` shape and the response is translated back.
+
+
+**Model pool classification**
+
+Each model is classified into one of three pools based on its `speed_rank` and `intelligence_rank`:
+
+- **Fast pool** (top 40% fastest models) — used by `freellmapi/auto-fast`
+- **Smart pool** (top 40% smartest models) — used by `freellmapi/auto-smart`
+- **Balanced pool** (remaining models) — used by `freellmapi/auto`
+
+The `/v1/models` endpoint returns a `primaryPool` field for each model indicating its classification. When the fast pool has no available models (e.g., all rate-limited), the router automatically borrows from the balanced pool.
 
 Every response carries an `X-Routed-Via: <platform>/<model>` header so you can see which provider actually served each call. If a request fell over between providers, you'll also see `X-Fallback-Attempts: N`.
 

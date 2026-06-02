@@ -4,6 +4,7 @@ import { decrypt } from '../lib/crypto.js';
 import { canMakeRequest, canUseTokens, isOnCooldown } from './ratelimit.js';
 import type { BaseProvider } from '../providers/base.js';
 import type { Database } from 'better-sqlite3';
+import { ModelPool } from '@freellmapi/shared/types.js';
 
 interface ChainRow {
   model_db_id: number;
@@ -15,6 +16,7 @@ interface ChainRow {
   rpd_limit: number | null;
   tpm_limit: number | null;
   tpd_limit: number | null;
+  speed_rank: number;
 }
 
 interface KeyRow {
@@ -47,6 +49,11 @@ const SMART_SPEED_FACTOR = 0.2;
 const SMART_TTFB_FACTOR = 0.2;
 const SMART_INTELLIGENCE_WEIGHT = 0.6;
 const AUTO_INTELLIGENCE_WEIGHT = 0.1;
+
+// Fast mode: heavily prioritize speed and TTFB, barely consider intelligence
+const FAST_SPEED_WEIGHT_MULTIPLIER = 3.0;
+const FAST_TTFB_FACTOR = 1.5;
+const FAST_INTELLIGENCE_WEIGHT = 0.02;
 
 // Optimistic speed prior for models with no successful history yet.
 const SPEED_PRIOR = 1.0;
@@ -160,7 +167,7 @@ interface ModelStats {
   avgTtfbMs: number | null;
 }
 
-export type RoutingMode = 'balanced' | 'smart';
+export type RoutingMode = 'balanced' | 'smart' | 'fast';
 
 // ── Balanced mode exclusions ────────────────────────────────────────────────
 // LongCat and Owl Alpha are excluded from balanced auto-routing so they are
@@ -328,6 +335,57 @@ function smartSampleScore(entry: ChainRow, minIntelligenceRank: number, maxIntel
     ? 1
     : 1 - ((entry.intelligence_rank - minIntelligenceRank) / intelligenceRange);
   return sampleBeta(alpha, beta) + SMART_INTELLIGENCE_WEIGHT * intelligenceScore + speed + ttfbScore;
+}
+
+
+// ── Pool classification ─────────────────────────────────────────────────────
+// Classifies a model into Fast, Balanced, or Smart pool based on its speed_rank
+// and intelligence_rank relative to the min/max in the chain.
+export function classifyModel(
+  speedRank: number,
+  intelligenceRank: number,
+  minSpeedRank: number,
+  maxSpeedRank: number,
+  minIntelligenceRank: number,
+  maxIntelligenceRank: number,
+): ModelPool {
+  const speedRange = maxSpeedRank - minSpeedRank;
+  const intelRange = maxIntelligenceRank - minIntelligenceRank;
+
+  // If no variation at all, default to Balanced
+  if (speedRange <= 0 && intelRange <= 0) return ModelPool.Balanced;
+
+  const normalizedSpeed = speedRange > 0
+    ? (speedRank - minSpeedRank) / speedRange
+    : 0.5;
+  const normalizedIntel = intelRange > 0
+    ? (intelligenceRank - minIntelligenceRank) / intelRange
+    : 0.5;
+
+  // Fast pool: top 40% fastest models (lowest normalized speed_rank)
+  if (normalizedSpeed <= 0.4) return ModelPool.Fast;
+  // Smart pool: top 40% smartest models (lowest normalized intelligence_rank)
+  if (normalizedIntel <= 0.4) return ModelPool.Smart;
+  return ModelPool.Balanced;
+}
+
+function fastSampleScore(entry: ChainRow, minIntelligenceRank: number, maxIntelligenceRank: number): number {
+  const stats = statsCache?.get(`${entry.platform}:${entry.model_id}`);
+  const alpha = Math.max(0.1, (stats?.successes ?? 0)) + PRIOR_SUCCESS;
+  const beta  = Math.max(0.1, ((stats?.total ?? 0) - (stats?.successes ?? 0))) + PRIOR_FAILURE;
+  const speed = stats === undefined
+    ? SPEED_WEIGHT * SPEED_PRIOR * FAST_SPEED_WEIGHT_MULTIPLIER
+    : (stats.tokPerSec > 0
+      ? speedContribution(stats.tokPerSec, maxTokPerSec) * FAST_SPEED_WEIGHT_MULTIPLIER
+      : 0);
+  const ttfbScore = stats === undefined
+    ? TTFB_WEIGHT * TTFB_PRIOR * FAST_TTFB_FACTOR
+    : ttfbContribution(stats.avgTtfbMs) * FAST_TTFB_FACTOR;
+  const intelligenceRange = maxIntelligenceRank - minIntelligenceRank;
+  const intelligenceScore = intelligenceRange <= 0
+    ? 1
+    : 1 - ((entry.intelligence_rank - minIntelligenceRank) / intelligenceRange);
+  return sampleBeta(alpha, beta) + FAST_INTELLIGENCE_WEIGHT * intelligenceScore + speed + ttfbScore;
 }
 
 /**
@@ -530,14 +588,14 @@ export function routeRequest(
   const chain = db.prepare(`
     SELECT fc.model_db_id,
            m.platform, m.model_id, m.display_name, m.intelligence_rank,
-           m.rpm_limit, m.rpd_limit, m.tpm_limit, m.tpd_limit
+           m.rpm_limit, m.rpd_limit, m.tpm_limit, m.tpd_limit, m.speed_rank
     FROM fallback_config fc
     JOIN models m ON m.id = fc.model_db_id AND m.enabled = 1
     WHERE fc.enabled = 1
   `).all() as ChainRow[];
 
   // T1.2: In balanced mode, exclude LongCat platform and Owl Alpha model
-  const filteredChain = routingMode === 'balanced'
+  let filteredChain = routingMode === 'balanced'
     ? chain.filter(entry => {
         if (EXCLUDED_FROM_BALANCED.has(entry.platform)) return false;
         const excludedModels = EXCLUDED_MODELS_FROM_BALANCED.get(entry.platform);
@@ -545,6 +603,31 @@ export function routeRequest(
         return true;
       })
     : chain;
+
+  // Fast mode: classify models into pools, try fast pool first, borrow from balanced
+  if (routingMode === 'fast') {
+    const allSpeedRanks = chain.map(e => e.speed_rank);
+    const minSpeedRank = Math.min(...allSpeedRanks);
+    const maxSpeedRank = Math.max(...allSpeedRanks);
+    const allIntelRanks = chain.map(e => e.intelligence_rank);
+    const minIntel = Math.min(...allIntelRanks);
+    const maxIntel = Math.max(...allIntelRanks);
+
+    const classified = chain.map(entry => ({
+      entry,
+      pool: classifyModel(entry.speed_rank, entry.intelligence_rank, minSpeedRank, maxSpeedRank, minIntel, maxIntel),
+    }));
+
+    const fastPoolEntries = classified.filter(c => c.pool === ModelPool.Fast).map(c => c.entry);
+    const balancedPoolEntries = classified.filter(c => c.pool === ModelPool.Balanced).map(c => c.entry);
+
+    if (fastPoolEntries.length === 0 && balancedPoolEntries.length > 0) {
+      console.log('[Router] Fast pool empty — borrowing all from balanced pool');
+    }
+
+    // Fast pool first; balanced pool appended as fallback (borrowing)
+    filteredChain = [...fastPoolEntries, ...balancedPoolEntries];
+  }
 
   const intelligenceRanks = filteredChain.map(entry => entry.intelligence_rank);
   const minIntelligenceRank = Math.min(...intelligenceRanks);
@@ -554,6 +637,8 @@ export function routeRequest(
     effectiveScore:
       (routingMode === 'smart'
         ? smartSampleScore(entry, minIntelligenceRank, maxIntelligenceRank)
+        : routingMode === 'fast'
+        ? fastSampleScore(entry, minIntelligenceRank, maxIntelligenceRank)
         : thompsonSampleScore(
             entry.platform,
             entry.model_id,

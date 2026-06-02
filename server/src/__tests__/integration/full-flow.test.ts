@@ -177,4 +177,48 @@ describe('Full Integration Flow', () => {
     expect(body.error.code).toBe('model_not_found');
     expect(body.error.message).toContain('is disabled');
   });
+
+  it('Step 13: /v1/models includes auto-fast with primaryPool=fast', async () => {
+    const { status, body } = await req(app, 'GET', '/v1/models');
+    expect(status).toBe(200);
+    const autoFast = body.data.find((m: any) => m.id === 'freellmapi/auto-fast');
+    expect(autoFast).toBeDefined();
+    expect(autoFast.primaryPool).toBe('fast');
+    expect(autoFast.name).toContain('Fast');
+  });
+
+  it('Step 14: /v1/models auto-balanced has primaryPool=balanced', async () => {
+    const { status, body } = await req(app, 'GET', '/v1/models');
+    expect(status).toBe(200);
+    const autoBalanced = body.data.find((m: any) => m.id === 'freellmapi/auto');
+    expect(autoBalanced).toBeDefined();
+    expect(autoBalanced.primaryPool).toBe('balanced');
+  });
+
+  it('Step 15: /v1/models auto-smart has primaryPool=smart', async () => {
+    const { status, body } = await req(app, 'GET', '/v1/models');
+    expect(status).toBe(200);
+    const autoSmart = body.data.find((m: any) => m.id === 'freellmapi/auto-smart');
+    expect(autoSmart).toBeDefined();
+    expect(autoSmart.primaryPool).toBe('smart');
+  });
+
+  it('Step 16: /v1/models individual models have primaryPool field', async () => {
+    const { status, body } = await req(app, 'GET', '/v1/models');
+    expect(status).toBe(200);
+    // All non-auto models should have a primaryPool field
+    const regularModels = body.data.filter((m: any) => !m.id.startsWith('freellmapi/'));
+    expect(regularModels.length).toBeGreaterThan(0);
+    for (const m of regularModels) {
+      expect(m).toHaveProperty('primaryPool');
+      expect(['fast', 'balanced', 'smart']).toContain(m.primaryPool);
+    }
+  });
+
+  it('Step 17: /v1/models/auto-fast returns model info', async () => {
+    const { status, body } = await req(app, 'GET', '/v1/models/freellmapi/auto-fast');
+    expect(status).toBe(200);
+    expect(body.id).toBe('freellmapi/auto-fast');
+    expect(body.owned_by).toBe('freellmapi');
+  });
 });
