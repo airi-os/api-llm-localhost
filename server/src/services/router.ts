@@ -151,13 +151,22 @@ function sampleBeta(alpha: number, beta: number): number {
 }
 
 interface ModelStats {
-  successes: number;
-  total: number;
-  tokPerSec: number;    // output tok/s from successful requests only
+  successes: number;       // recency-weighted successes
+  total: number;           // recency-weighted total
+  rawTotal: number;        // unweighted raw count
+  tokPerSec: number;       // output tok/s from successful requests only
   avgTtfbMs: number | null; // avg TTFB across successful requests (null if no data)
 }
 
 export type RoutingMode = 'balanced' | 'smart';
+
+// ── Balanced mode exclusions ────────────────────────────────────────────────
+// LongCat and Owl Alpha are excluded from balanced auto-routing so they are
+// only reachable via explicit model request or smart-mode preference.
+const EXCLUDED_FROM_BALANCED = new Set<string>(['longcat']);
+const EXCLUDED_MODELS_FROM_BALANCED = new Map<string, Set<string>>([
+  ['openrouter', new Set(['owl-alpha'])],
+]);
 
 let statsCache: Map<string, ModelStats> | null = null;
 let statsCacheTime = 0;
@@ -167,10 +176,15 @@ export function refreshStatsCache(db: Database, force = false): void {
   if (!force && statsCache && Date.now() - statsCacheTime < ANALYTICS_CACHE_TTL_MS) return;
 
   const since = new Date(Date.now() - ANALYTICS_WINDOW_MS).toISOString();
+  // Recency weight per row: MAX(0, MIN(1.0, 1.0 - days_ago / 7.0))
+  // Future timestamps (clock drift) capped at weight 1.0 via MIN(1.0, ...).
   const rows = db.prepare(`
     SELECT platform, model_id,
-      COUNT(*) as total,
-      SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as successes,
+      COUNT(*) as raw_total,
+      SUM(MAX(0, MIN(1.0, 1.0 - (julianday('now') - julianday(created_at)) / 7.0)))) as total,
+      SUM(CASE WHEN status = 'success'
+        THEN MAX(0, MIN(1.0, 1.0 - (julianday('now') - julianday(created_at)) / 7.0)))
+        ELSE 0 END) as successes,
       CASE
         WHEN SUM(CASE WHEN status = 'success' THEN latency_ms ELSE 0 END) > 0
         THEN SUM(CASE WHEN status = 'success' THEN output_tokens ELSE 0 END) * 1000.0
@@ -182,7 +196,7 @@ export function refreshStatsCache(db: Database, force = false): void {
     WHERE created_at >= ?
     GROUP BY platform, model_id
   `).all(since) as Array<{
-    platform: string; model_id: string; total: number; successes: number;
+    platform: string; model_id: string; raw_total: number; total: number; successes: number;
     tok_per_sec: number; avg_ttfb_ms: number | null;
   }>;
 
@@ -192,6 +206,7 @@ export function refreshStatsCache(db: Database, force = false): void {
     statsCache.set(`${row.platform}:${row.model_id}`, {
       successes: row.successes,
       total: row.total,
+      rawTotal: row.raw_total,
       tokPerSec: row.tok_per_sec,
       avgTtfbMs: row.avg_ttfb_ms ?? null,
     });
@@ -343,7 +358,7 @@ export function getAnalyticsScores(): Array<{
       modelId,
       score: getAnalyticsScore(platform, modelId, intelligenceRank, minIntelligenceRank, maxIntelligenceRank),
       successRate: stats.total > 0 ? stats.successes / stats.total : 0,
-      total: stats.total,
+      total: stats.rawTotal,
       tokPerSec: stats.tokPerSec,
       avgTtfbMs: stats.avgTtfbMs,
     });
@@ -439,6 +454,26 @@ export function getAllPenalties(): Array<{ modelDbId: number; count: number; pen
   return result.sort((a, b) => b.penalty - a.penalty);
 }
 
+// ── Key capacity helper ──────────────────────────────────────────────────────
+// Checks whether any enabled, non-invalid key for a given platform/model has
+// capacity (not on cooldown, can make a request, can use the estimated tokens).
+function hasValidKeys(
+  platform: string,
+  modelId: string,
+  limits: { rpm: number | null; rpd: number | null; tpm: number | null; tpd: number | null },
+  estimatedTokens: number,
+): boolean {
+  const db = getDb();
+  const keys = db.prepare(
+    'SELECT * FROM api_keys WHERE platform = ? AND enabled = 1 AND status != ?'
+  ).all(platform, 'invalid') as KeyRow[];
+  return keys.some(key =>
+    !isOnCooldown(platform, modelId, key.id) &&
+    canMakeRequest(platform, modelId, key.id, limits) &&
+    canUseTokens(platform, modelId, key.id, estimatedTokens, limits)
+  );
+}
+
 /**
  * Route a request to the best available model.
  *
@@ -477,10 +512,20 @@ export function routeRequest(
     WHERE fc.enabled = 1
   `).all() as ChainRow[];
 
-  const intelligenceRanks = chain.map(entry => entry.intelligence_rank);
+  // T1.2: In balanced mode, exclude LongCat platform and Owl Alpha model
+  const filteredChain = routingMode === 'balanced'
+    ? chain.filter(entry => {
+        if (EXCLUDED_FROM_BALANCED.has(entry.platform)) return false;
+        const excludedModels = EXCLUDED_MODELS_FROM_BALANCED.get(entry.platform);
+        if (excludedModels?.has(entry.model_id)) return false;
+        return true;
+      })
+    : chain;
+
+  const intelligenceRanks = filteredChain.map(entry => entry.intelligence_rank);
   const minIntelligenceRank = Math.min(...intelligenceRanks);
   const maxIntelligenceRank = Math.max(...intelligenceRanks);
-  const sorted = chain.map(entry => ({
+  const sorted = filteredChain.map(entry => ({
     ...entry,
     effectiveScore:
       (routingMode === 'smart'
@@ -495,33 +540,42 @@ export function routeRequest(
       - getPenalty(entry.model_db_id) * PENALTY_SCORE_WEIGHT,
   })).sort((a, b) => b.effectiveScore - a.effectiveScore);
 
-  // LongCat preference in smart mode: move LongCat entries to front if any key has capacity
   if (routingMode === 'smart') {
+    let lcPreferred = false;
     const longcatEntries = sorted.filter(e => e.platform === 'longcat');
     if (longcatEntries.length > 0) {
-      // Check if any LongCat key passes rate-limit checks
-      const lcKeys = db.prepare(
-        'SELECT * FROM api_keys WHERE platform = ? AND enabled = 1 AND status != ?'
-      ).all('longcat', 'invalid') as KeyRow[];
-      if (lcKeys.length > 0) {
-        const sampleEntry = longcatEntries[0];
-        const lcLimits = {
-          rpm: sampleEntry.rpm_limit,
-          rpd: sampleEntry.rpd_limit,
-          tpm: sampleEntry.tpm_limit,
-          tpd: sampleEntry.tpd_limit,
-        };
-        const hasCapacity = lcKeys.some(key =>
-          !isOnCooldown(sampleEntry.platform, sampleEntry.model_id, key.id) &&
-          canMakeRequest(sampleEntry.platform, sampleEntry.model_id, key.id, lcLimits) &&
-          canUseTokens(sampleEntry.platform, sampleEntry.model_id, key.id, estimatedTokens, lcLimits)
-        );
-        if (hasCapacity) {
-          // Move all LongCat entries to front, preserving relative score order
-          const others = sorted.filter(e => e.platform !== 'longcat');
-          sorted.length = 0;
-          sorted.push(...longcatEntries, ...others);
+      const sampleEntry = longcatEntries[0];
+      const lcLimits = {
+        rpm: sampleEntry.rpm_limit,
+        rpd: sampleEntry.rpd_limit,
+        tpm: sampleEntry.tpm_limit,
+        tpd: sampleEntry.tpd_limit,
+      };
+      if (hasValidKeys(sampleEntry.platform, sampleEntry.model_id, lcLimits, estimatedTokens)) {
+        const others = sorted.filter(e => e.platform !== 'longcat');
+        sorted.length = 0;
+        sorted.push(...longcatEntries, ...others);
+        lcPreferred = true;
+      }
+    }
+
+    // Owl Alpha smart preference
+    const owlAlphaEntry = sorted.find(e => e.platform === 'openrouter' && e.model_id === 'owl-alpha');
+    if (owlAlphaEntry) {
+      const oaLimits = {
+        rpm: owlAlphaEntry.rpm_limit,
+        rpd: owlAlphaEntry.rpd_limit,
+        tpm: owlAlphaEntry.tpm_limit,
+        tpd: owlAlphaEntry.tpd_limit,
+      };
+      if (hasValidKeys(owlAlphaEntry.platform, owlAlphaEntry.model_id, oaLimits, estimatedTokens)) {
+        const owlIdx = sorted.indexOf(owlAlphaEntry);
+        if (owlIdx >= 0) {
+          sorted.splice(owlIdx, 1);
         }
+        const insertIdx = lcPreferred ? longcatEntries.length : 0;
+        sorted.splice(insertIdx, 0, owlAlphaEntry);
+        console.log('[Router] Owl Alpha preference active — moving openrouter/owl-alpha to front');
       }
     }
   }

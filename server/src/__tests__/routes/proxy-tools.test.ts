@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vite
 import type { Express } from 'express';
 import { createApp } from '../../app.js';
 import { initDb, getDb, getUnifiedApiKey } from '../../db/index.js';
-import { stickySessionMap, getSessionKey } from '../../routes/proxy.js';
+import { stickySessionMap, getSessionKey, transientModelCooldowns } from '../../routes/proxy.js';
 
 async function request(app: Express, method: string, path: string, body?: any) {
   const server = app.listen(0);
@@ -812,9 +812,7 @@ describe('LongCat sticky session cooldown', () => {
 
   beforeEach(async () => {
     (stickySessionMap as Map<any, any>).clear();
-    // Dynamic import to get the same module instance used by the running app
-    const { transientModelCooldowns: cooldowns } = await import('../../routes/proxy.js');
-    (cooldowns as Map<any, any>).clear();
+    (transientModelCooldowns as Map<any, any>).clear();
     const db = getDb();
     db.prepare('DELETE FROM api_keys').run();
     db.prepare('DELETE FROM requests').run();

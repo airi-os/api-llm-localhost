@@ -27,6 +27,8 @@ const responseItemMap = new Map<string, ChatMessage>();
 const RESPONSE_SESSION_TTL_MS = 30 * 60 * 1000;
 const MAX_RESPONSE_SESSIONS = 500;
 const MAX_MODEL_RESPONSE_LOG_CHARS = 6000;
+const transientModelCooldowns = new Map<number, number>(); // modelDbId -> expiryTimestamp
+const TRANSIENT_COOLDOWN_MS = 15000; // 15 seconds
 
 function getSessionKey(messages: ChatMessage[], routingMode: RoutingMode): string {
   // Use the first user message as session identifier — clients like Hermes
@@ -181,6 +183,8 @@ export {
   setStickyModel,
   clearStickyModel,
   stickySessionMap,
+  transientModelCooldowns,
+  TRANSIENT_COOLDOWN_MS,
 };
 
 function clearStickyModel(messages: ChatMessage[], routingMode: RoutingMode) {
@@ -1194,6 +1198,31 @@ async function handleChatCompletion(
     }
   }
 
+  // Transient cooldown: inject globally-cooled models into skipModels (lazy pruning)
+  {
+    const now = Date.now();
+    for (const [modelDbId, expiry] of transientModelCooldowns) {
+      if (now > expiry) {
+        transientModelCooldowns.delete(modelDbId);
+      } else {
+        skipModels.add(modelDbId);
+      }
+    }
+  }
+
+  // If the preferred (sticky) model is on global cooldown, clear the preference
+  if (preferredModel && transientModelCooldowns.has(preferredModel)) {
+    const now = Date.now();
+    const expiry = transientModelCooldowns.get(preferredModel)!;
+    if (now < expiry) {
+      console.log(`[TransientCooldown] preferredModel=${preferredModel} is on global cooldown (${Math.round((expiry - now) / 1000)}s remaining) — clearing sticky preference`);
+      preferredModel = undefined;
+      preferredKeyId = undefined;
+    } else {
+      transientModelCooldowns.delete(preferredModel);
+    }
+  }
+
   if (preferredModel) {
     const db = getDb();
     const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
@@ -1506,9 +1535,12 @@ async function handleChatCompletion(
                 console.warn(`[Proxy] Mid-stream 5xx from ${route.platform} — skipping model ${route.modelId} only`);
                 skipModels.add(route.modelDbId);
               }
-            }
-  
-            // Generalized truncation detection for any provider (not just LongCat)
+             // Register global transient cooldown for any 5xx mid-stream error
+             transientModelCooldowns.set(route.modelDbId, Date.now() + TRANSIENT_COOLDOWN_MS);
+             console.log(`[TransientCooldown] registered global cooldown for modelDbId=${route.modelDbId} (${TRANSIENT_COOLDOWN_MS / 1000}s)`);
+           }
+
+           // Generalized truncation detection for any provider (not just LongCat)
             // Aggregate all possible error text sources for comprehensive detection
             const truncationTexts: string[] = [];
             if (streamErr instanceof Error) {
@@ -1671,11 +1703,14 @@ async function handleChatCompletion(
         } else {
           console.warn(`[Proxy] 5xx from ${route.platform} — skipping model ${route.modelId} only`);
           skipModels.add(route.modelDbId);
-        }
-      }
+       }
+     }
 
-      if (isRetryableError(err)) {
+     if (isRetryableError(err)) {
         // LongCat: on any retryable error, exclude entire provider immediately
+        // Register global transient cooldown for this failing model
+        transientModelCooldowns.set(route.modelDbId, Date.now() + TRANSIENT_COOLDOWN_MS);
+        console.log(`[TransientCooldown] registered global cooldown for modelDbId=${route.modelDbId} (${TRANSIENT_COOLDOWN_MS / 1000}s)`);
         if (route.platform === 'longcat') {
           console.warn(`[Proxy] Retryable error from LongCat — excluding entire LongCat provider for session`);
           banPlatformFromSession(normalizedMessages, routingMode, 'longcat', route.modelDbId);
