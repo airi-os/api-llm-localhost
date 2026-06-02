@@ -48,47 +48,47 @@ describe('Provider session ban functionality', () => {
   describe('isSessionBannedFromPlatform', () => {
     it('returns false when no sticky session exists', () => {
       const messages = makeMessages('Hello');
-      expect(isSessionBannedFromPlatform(messages, 'balanced', 'longcat')).toBe(false);
+      expect(isSessionBannedFromPlatform(messages, 'smart', 'longcat')).toBe(false);
     });
 
     it('returns false when sticky session exists but no bannedPlatforms', () => {
       const messages = makeMessages('Hello');
-      const key = getSessionKey(messages, 'balanced');
+      const key = getSessionKey(messages, 'smart');
       (stickySessionMap as Map<any, any>).set(key, { modelDbId: 1, lastUsed: Date.now() });
-      expect(isSessionBannedFromPlatform(messages, 'balanced', 'longcat')).toBe(false);
+      expect(isSessionBannedFromPlatform(messages, 'smart', 'longcat')).toBe(false);
     });
 
     it('returns true when the platform is in bannedPlatforms', () => {
       const messages = makeMessages('Hello');
-      const key = getSessionKey(messages, 'balanced');
+      const key = getSessionKey(messages, 'smart');
       (stickySessionMap as Map<any, any>).set(key, {
         modelDbId: 1,
         lastUsed: Date.now(),
         bannedPlatforms: new Set(['longcat']),
       });
-      expect(isSessionBannedFromPlatform(messages, 'balanced', 'longcat')).toBe(true);
+      expect(isSessionBannedFromPlatform(messages, 'smart', 'longcat')).toBe(true);
     });
 
     it('returns false when a different platform is banned', () => {
       const messages = makeMessages('Hello');
-      const key = getSessionKey(messages, 'balanced');
+      const key = getSessionKey(messages, 'smart');
       (stickySessionMap as Map<any, any>).set(key, {
         modelDbId: 1,
         lastUsed: Date.now(),
         bannedPlatforms: new Set(['groq']),
       });
-      expect(isSessionBannedFromPlatform(messages, 'balanced', 'longcat')).toBe(false);
+      expect(isSessionBannedFromPlatform(messages, 'smart', 'longcat')).toBe(false);
     });
 
     it('returns false when the sticky session has expired (past TTL)', () => {
       const messages = makeMessages('Hello');
-      const key = getSessionKey(messages, 'balanced');
+      const key = getSessionKey(messages, 'smart');
       (stickySessionMap as Map<any, any>).set(key, {
         modelDbId: 1,
         lastUsed: Date.now() - (31 * 60 * 1000), // 31 minutes ago
         bannedPlatforms: new Set(['longcat']),
       });
-      expect(isSessionBannedFromPlatform(messages, 'balanced', 'longcat')).toBe(false);
+      expect(isSessionBannedFromPlatform(messages, 'smart', 'longcat')).toBe(false);
     });
   });
 
@@ -96,17 +96,17 @@ describe('Provider session ban functionality', () => {
   describe('banPlatformFromSession', () => {
     it('does not create entry if none exists and no modelDbId provided', () => {
       const messages = makeMessages('Hello');
-      const key = getSessionKey(messages, 'balanced');
+      const key = getSessionKey(messages, 'smart');
       expect(stickySessionMap.has(key)).toBe(false);
-      banPlatformFromSession(messages, 'balanced', 'longcat');
+      banPlatformFromSession(messages, 'smart', 'longcat');
       expect(stickySessionMap.has(key)).toBe(false);
     });
 
     it('creates entry if none exists and modelDbId is provided', () => {
       const messages = makeMessages('Hello');
-      const key = getSessionKey(messages, 'balanced');
+      const key = getSessionKey(messages, 'smart');
       expect(stickySessionMap.has(key)).toBe(false);
-      banPlatformFromSession(messages, 'balanced', 'longcat', 99);
+      banPlatformFromSession(messages, 'smart', 'longcat', 99);
       expect(stickySessionMap.has(key)).toBe(true);
       const entry = stickySessionMap.get(key);
       expect(entry.modelDbId).toBe(99);
@@ -115,13 +115,13 @@ describe('Provider session ban functionality', () => {
 
     it('adds to existing bannedPlatforms if entry already exists', () => {
       const messages = makeMessages('Hello');
-      const key = getSessionKey(messages, 'balanced');
+      const key = getSessionKey(messages, 'smart');
       (stickySessionMap as Map<any, any>).set(key, {
         modelDbId: 2,
         lastUsed: Date.now(),
         bannedPlatforms: new Set(['groq']),
       });
-      banPlatformFromSession(messages, 'balanced', 'longcat');
+      banPlatformFromSession(messages, 'smart', 'longcat');
       const entry = stickySessionMap.get(key);
       expect(entry.bannedPlatforms.has('groq')).toBe(true);
       expect(entry.bannedPlatforms.has('longcat')).toBe(true);
@@ -129,27 +129,27 @@ describe('Provider session ban functionality', () => {
 
     it('does not duplicate platforms already banned', () => {
       const messages = makeMessages('Hello');
-      const key = getSessionKey(messages, 'balanced');
+      const key = getSessionKey(messages, 'smart');
       (stickySessionMap as Map<any, any>).set(key, {
         modelDbId: 3,
         lastUsed: Date.now(),
         bannedPlatforms: new Set(['longcat']),
       });
       const beforeSize = stickySessionMap.get(key).bannedPlatforms.size;
-      banPlatformFromSession(messages, 'balanced', 'longcat');
+      banPlatformFromSession(messages, 'smart', 'longcat');
       const afterSize = stickySessionMap.get(key).bannedPlatforms.size;
       expect(afterSize).toBe(beforeSize);
     });
 
     it('preserves existing modelDbId and keyId when banning', () => {
       const messages = makeMessages('Hello');
-      const key = getSessionKey(messages, 'balanced');
+      const key = getSessionKey(messages, 'smart');
       (stickySessionMap as Map<any, any>).set(key, {
         modelDbId: 42,
         keyId: 7,
         lastUsed: Date.now(),
       });
-      banPlatformFromSession(messages, 'balanced', 'longcat');
+      banPlatformFromSession(messages, 'smart', 'longcat');
       const entry = stickySessionMap.get(key);
       expect(entry.modelDbId).toBe(42);
       expect(entry.keyId).toBe(7);
@@ -157,13 +157,13 @@ describe('Provider session ban functionality', () => {
 
     it('refreshes lastUsed TTL when banning', () => {
       const messages = makeMessages('Hello');
-      const key = getSessionKey(messages, 'balanced');
+      const key = getSessionKey(messages, 'smart');
       const oldTime = Date.now() - (20 * 60 * 1000); // 20 minutes ago
       (stickySessionMap as Map<any, any>).set(key, {
         modelDbId: 1,
         lastUsed: oldTime,
       });
-      banPlatformFromSession(messages, 'balanced', 'longcat');
+      banPlatformFromSession(messages, 'smart', 'longcat');
       const entry = stickySessionMap.get(key);
       expect(entry.lastUsed).toBeGreaterThan(oldTime);
     });
@@ -207,25 +207,25 @@ describe('Provider session ban functionality', () => {
   describe('resetAllConsecutiveFailures', () => {
     it('runs without error when sticky session exists', () => {
       const messages = makeMessages('Hello');
-      const key = getSessionKey(messages, 'balanced');
+      const key = getSessionKey(messages, 'smart');
       (stickySessionMap as Map<any, any>).set(key, { modelDbId: 1, lastUsed: Date.now() });
-      expect(() => resetAllConsecutiveFailures(messages, 'balanced')).not.toThrow();
+      expect(() => resetAllConsecutiveFailures(messages, 'smart')).not.toThrow();
     });
 
     it('no-op if no sticky session', () => {
       const messages = makeMessages('Hello');
-      expect(() => resetAllConsecutiveFailures(messages, 'balanced')).not.toThrow();
+      expect(() => resetAllConsecutiveFailures(messages, 'smart')).not.toThrow();
     });
 
     it('preserves sticky entry when called', () => {
       const messages = makeMessages('Hello');
-      const key = getSessionKey(messages, 'balanced');
+      const key = getSessionKey(messages, 'smart');
       (stickySessionMap as Map<any, any>).set(key, {
         modelDbId: 1,
         lastUsed: Date.now(),
         bannedPlatforms: new Set(['groq']),
       });
-      resetAllConsecutiveFailures(messages, 'balanced');
+      resetAllConsecutiveFailures(messages, 'smart');
       const entry = stickySessionMap.get(key);
       expect(entry).toBeDefined();
       expect(entry.modelDbId).toBe(1);
@@ -244,7 +244,7 @@ describe('Provider session ban functionality', () => {
       'token_limit exceeded',
       'maximum length reached',
       'response_length_limit hit',
-      'conflict in response',
+      'cut off',
     ];
 
     truncationSamples.forEach(sample => {
@@ -276,22 +276,22 @@ describe('Provider session ban functionality', () => {
   describe('Integration: ban lifecycle', () => {
     it('ban persists across model changes and expires after TTL', () => {
       const messages = makeMessages('Hello');
-      const key = getSessionKey(messages, 'balanced');
+      const key = getSessionKey(messages, 'smart');
       const db = getDb();
       const longcatRow = db.prepare("SELECT id FROM models WHERE platform = 'longcat' AND enabled = 1").get() as any;
       expect(longcatRow).toBeDefined();
-      setStickyModel(messages, longcatRow.id, 'balanced');
+      setStickyModel(messages, longcatRow.id, 'smart');
       // Ban longcat for this session
-      banPlatformFromSession(messages, 'balanced', 'longcat');
+      banPlatformFromSession(messages, 'smart', 'longcat');
       // getStickyModel still returns the model (ban check is in routing logic, not getStickyModel)
-      expect(getStickyModel(messages, 'balanced')).toBe(longcatRow.id);
+      expect(getStickyModel(messages, 'smart')).toBe(longcatRow.id);
       // But isSessionBannedFromPlatform should return true
-      expect(isSessionBannedFromPlatform(messages, 'balanced', 'longcat')).toBe(true);
+      expect(isSessionBannedFromPlatform(messages, 'smart', 'longcat')).toBe(true);
       // Simulate TTL expiration by adjusting lastUsed
       const entry = stickySessionMap.get(key);
       entry.lastUsed = Date.now() - (31 * 60 * 1000); // 31 minutes
       // After expiration, ban should be considered cleared
-      expect(isSessionBannedFromPlatform(messages, 'balanced', 'longcat')).toBe(false);
+      expect(isSessionBannedFromPlatform(messages, 'smart', 'longcat')).toBe(false);
     });
 
     it('ban check and skipModels work together to prevent banned platform selection', () => {
@@ -300,13 +300,13 @@ describe('Provider session ban functionality', () => {
       const longcatRow = db.prepare("SELECT id FROM models WHERE platform = 'longcat' AND enabled = 1").get() as any;
       expect(longcatRow).toBeDefined();
       // Set sticky model to a longcat model
-      setStickyModel(messages, longcatRow.id, 'balanced');
+      setStickyModel(messages, longcatRow.id, 'smart');
       // Verify sticky model is set
-      expect(getStickyModel(messages, 'balanced')).toBe(longcatRow.id);
+      expect(getStickyModel(messages, 'smart')).toBe(longcatRow.id);
       // Ban longcat for this session
-      banPlatformFromSession(messages, 'balanced', 'longcat');
+      banPlatformFromSession(messages, 'smart', 'longcat');
       // Verify ban is registered
-      expect(isSessionBannedFromPlatform(messages, 'balanced', 'longcat')).toBe(true);
+      expect(isSessionBannedFromPlatform(messages, 'smart', 'longcat')).toBe(true);
       // Verify addProviderModelsToSkipModels includes the banned model
       const skipModels = new Set<number>();
       addProviderModelsToSkipModels(skipModels, 'longcat');
@@ -319,36 +319,36 @@ describe('Provider session ban functionality', () => {
       const longcatRow = db.prepare("SELECT id FROM models WHERE platform = 'longcat' AND enabled = 1").get() as any;
       expect(longcatRow).toBeDefined();
       // Initially not banned
-      expect(isSessionBannedFromPlatform(messages, 'balanced', 'longcat')).toBe(false);
+      expect(isSessionBannedFromPlatform(messages, 'smart', 'longcat')).toBe(false);
       // Ban via banPlatformFromSession (simulating what production code now does directly)
-      banPlatformFromSession(messages, 'balanced', 'longcat', longcatRow.id);
+      banPlatformFromSession(messages, 'smart', 'longcat', longcatRow.id);
       // Now should be banned
-      expect(isSessionBannedFromPlatform(messages, 'balanced', 'longcat')).toBe(true);
+      expect(isSessionBannedFromPlatform(messages, 'smart', 'longcat')).toBe(true);
     });
 
     it('success via resetAllConsecutiveFailures runs without error', () => {
       const messages = makeMessages('Hello');
-      const key = getSessionKey(messages, 'balanced');
+      const key = getSessionKey(messages, 'smart');
       // Create a sticky entry
       (stickySessionMap as Map<any, any>).set(key, { modelDbId: 1, lastUsed: Date.now() });
       // Simulate success path calling resetAllConsecutiveFailures
-      expect(() => resetAllConsecutiveFailures(messages, 'balanced')).not.toThrow();
+      expect(() => resetAllConsecutiveFailures(messages, 'smart')).not.toThrow();
       // Entry should still exist (resetAllConsecutiveFailures is a no-op)
       expect(stickySessionMap.has(key)).toBe(true);
     });
 
     it('ban from provider A does not affect provider B', () => {
       const messages = makeMessages('Hello');
-      const key = getSessionKey(messages, 'balanced');
+      const key = getSessionKey(messages, 'smart');
       (stickySessionMap as Map<any, any>).set(key, {
         modelDbId: 1,
         lastUsed: Date.now(),
       });
       // Ban longcat
-      banPlatformFromSession(messages, 'balanced', 'longcat');
-      expect(isSessionBannedFromPlatform(messages, 'balanced', 'longcat')).toBe(true);
+      banPlatformFromSession(messages, 'smart', 'longcat');
+      expect(isSessionBannedFromPlatform(messages, 'smart', 'longcat')).toBe(true);
       // groq should not be banned
-      expect(isSessionBannedFromPlatform(messages, 'balanced', 'groq')).toBe(false);
+      expect(isSessionBannedFromPlatform(messages, 'smart', 'groq')).toBe(false);
     });
   });
 
@@ -360,14 +360,58 @@ describe('Provider session ban functionality', () => {
       const longcatRow = db.prepare("SELECT id FROM models WHERE platform = 'longcat' AND enabled = 1").get() as any;
       expect(longcatRow).toBeDefined();
       // Simulate truncation detection calling banPlatformFromSession
-      banPlatformFromSession(messages, 'balanced', 'longcat', longcatRow.id);
-      expect(isSessionBannedFromPlatform(messages, 'balanced', 'longcat')).toBe(true);
+      banPlatformFromSession(messages, 'smart', 'longcat', longcatRow.id);
+      expect(isSessionBannedFromPlatform(messages, 'smart', 'longcat')).toBe(true);
     });
 
     it('isTruncatedResponse detects truncation patterns in error messages', () => {
       expect(isTruncatedResponse('The response was truncated')).toBe(true);
       expect(isTruncatedResponse('context_length_exceeded error')).toBe(true);
       expect(isTruncatedResponse('some other error')).toBe(false);
+    });
+  });
+
+  // ---------- Balanced mode: sticky sessions disabled ----------
+  describe('Balanced mode: sticky session operations are skipped', () => {
+    const makeMessages = (content: string) => [{ role: 'user' as const, content }];
+
+    it('getSessionKey() returns empty string for balanced mode', () => {
+      const messages = makeMessages('Hello balanced');
+      expect(getSessionKey(messages, 'balanced')).toBe('');
+    });
+
+    it('getStickyModel() returns undefined for balanced mode even when smart-mode sticky entry exists for same messages', () => {
+      const messages = makeMessages('Hello dual-mode');
+      // Set up a sticky entry under smart mode for the same messages
+      const smartKey = getSessionKey(messages, 'smart');
+      expect(smartKey).not.toBe('');
+      (stickySessionMap as Map<any, any>).set(smartKey, {
+        modelDbId: 42,
+        lastUsed: Date.now(),
+      });
+      // Balanced mode should return undefined despite the smart-mode entry existing
+      expect(getStickyModel(messages, 'balanced')).toBeUndefined();
+    });
+
+    it('isSessionBannedFromPlatform() returns false for balanced mode', () => {
+      const messages = makeMessages('Hello ban-check');
+      // Even if we manually insert a balanced-mode key (which shouldn't happen in practice),
+      // isSessionBannedFromPlatform should return false because getSessionKey returns ''
+      expect(isSessionBannedFromPlatform(messages, 'balanced', 'longcat')).toBe(false);
+    });
+
+    it('banPlatformFromSession() does not create entries for balanced mode', () => {
+      const messages = makeMessages('Hello ban-test');
+      banPlatformFromSession(messages, 'balanced', 'longcat', 99);
+      // No entries should have been created
+      expect(stickySessionMap.size).toBe(0);
+    });
+
+    it('setStickyModel() does not create entries for balanced mode', () => {
+      const messages = makeMessages('Hello set-test');
+      setStickyModel(messages, 7, 'balanced', 3);
+      // No entries should have been created
+      expect(stickySessionMap.size).toBe(0);
     });
   });
 });

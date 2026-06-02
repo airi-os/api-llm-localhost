@@ -23,6 +23,10 @@ const MAX_RESPONSE_SESSIONS = 500;
 const MAX_MODEL_RESPONSE_LOG_CHARS = 6000;
 
 function getSessionKey(messages: ChatMessage[], routingMode: RoutingMode): string {
+  // Sticky sessions only apply to smart/auto-smart routing.
+  // Balanced/auto uses free routing on every request.
+  if (routingMode === 'balanced') return '';
+
   // Use the first user message as session identifier — clients like Hermes
   // re-send the full conversation each turn, so the first user message is
   // stable across turns. Hash the FULL message (not a 100-char slice) so
