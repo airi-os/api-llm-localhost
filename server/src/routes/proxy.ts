@@ -1231,7 +1231,7 @@ async function handleChatCompletion(
       const cooldownEntry = cooldownSessionKey ? stickySessionMap.get(cooldownSessionKey) : undefined;
       if (cooldownEntry && Date.now() - cooldownEntry.lastUsed < LONGCAT_STICKY_COOLDOWN_MS) {
         const ageMs = Date.now() - cooldownEntry.lastUsed;
-        skipModels.add(route.modelDbId);
+        skipModels.add(preferredModel);
         console.log(`[Sticky] Owl Alpha cooldown active — excluding openrouter/owl-alpha from bandit routing for other sessions | session=${cooldownSessionKey?.slice(0, 8)} | lastUsed=${ageMs}ms ago`);
       }
     }
