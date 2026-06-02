@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
+import { ModelPool } from '@freellmapi/shared/types.js';
 import type { Express } from 'express';
 import { createApp } from '../../app.js';
 import { initDb } from '../../db/index.js';
@@ -48,6 +49,16 @@ describe('Fallback API', () => {
     expect(first).toHaveProperty('platform');
     expect(first).toHaveProperty('displayName');
     expect(first).toHaveProperty('intelligenceRank');
+    expect(first).toHaveProperty('speedRank');
+    expect(first).toHaveProperty('pool');
+  });
+
+  it('GET /api/fallback pool values are valid ModelPool enum values', async () => {
+    const { body } = await request(app, 'GET', '/api/fallback');
+    const validPools = [ModelPool.Fast, ModelPool.Balanced, ModelPool.Smart];
+    for (const entry of body) {
+      expect(validPools).toContain(entry.pool);
+    }
   });
 
   it('PUT /api/fallback updates order', async () => {

@@ -1455,14 +1455,14 @@ async function handleChatCompletion(
           {
             const streamTextToCheck = responseStreamContext ? responseStreamContext.outputText : streamedText;
             if (isTruncatedResponse(streamTextToCheck)) {
-              if (route.platform === 'longcat') {
-                // LongCat: exclude entire provider immediately on truncation
-                console.warn(`[Proxy] Truncated stream content detected from LongCat — banning LongCat provider for session`);
-                banPlatformFromSession(normalizedMessages, routingMode, 'longcat', route.modelDbId);
-                addProviderModelsToSkipModels(skipModels, 'longcat');
-              } else {
-                // Non-LongCat: skip only this specific model, other models from same provider remain available
-                console.warn(`[Proxy] Truncated stream content detected from ${route.platform} — skipping model ${route.modelId} for session`);
+              const action = evaluateThreadProtection({ platform: route.platform, kind: 'truncation', midStream: false, modelDbId: route.modelDbId });
+              if (action.banProvider) {
+                console.warn(`[Proxy] Truncated stream content detected from ${route.platform} — banning provider for session (${action.reason})`);
+                banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
+                addProviderModelsToSkipModels(skipModels, route.platform);
+              }
+              if (action.skipModel) {
+                console.warn(`[Proxy] Truncated stream content detected from ${route.platform} — skipping model ${route.modelId} for session (${action.reason})`);
                 skipModels.add(route.modelDbId);
               }
             }
@@ -1523,17 +1523,25 @@ async function handleChatCompletion(
           cleanupStream();
           if (streamStarted) {
             // 5xx failure detection for mid-stream errors
-            // LongCat: exclude entire provider immediately on any 5xx
-            // Non-LongCat: skip only this specific model, other models from same provider remain available
             const streamErrStatus = getErrorStatus(streamErr);
             if (streamErrStatus && isBanEligibleStatus(streamErrStatus)) {
-              if (route.platform === 'longcat') {
-                console.warn(`[Proxy] Mid-stream 5xx from LongCat — excluding entire LongCat provider for session`);
-                banPlatformFromSession(normalizedMessages, routingMode, 'longcat', route.modelDbId);
-                addProviderModelsToSkipModels(skipModels, 'longcat');
-              } else {
-                console.warn(`[Proxy] Mid-stream 5xx from ${route.platform} — skipping model ${route.modelId} only`);
+              const action = evaluateThreadProtection({ platform: route.platform, kind: '5xx', midStream: true, modelDbId: route.modelDbId, error: streamErr });
+              if (action.banProvider) {
+                console.warn(`[Proxy] Mid-stream 5xx from ${route.platform} — banning provider for session (${action.reason})`);
+                banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
+                addProviderModelsToSkipModels(skipModels, route.platform);
+              }
+              if (action.skipModel) {
+                console.warn(`[Proxy] Mid-stream 5xx from ${route.platform} — skipping model ${route.modelId} only (${action.reason})`);
                 skipModels.add(route.modelDbId);
+              }
+              if (action.clearStickyIfPinned && preferredModel) {
+                const db = getDb();
+                const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
+                if (prefRow?.platform === route.platform) {
+                  preferredModel = undefined;
+                  preferredKeyId = undefined;
+                }
               }
              // Register global transient cooldown for any 5xx mid-stream error
              transientModelCooldowns.set(route.modelDbId, Date.now() + TRANSIENT_COOLDOWN_MS);
@@ -1555,14 +1563,14 @@ async function handleChatCompletion(
             truncationTexts.push(String(streamErr));
             const combinedTruncationText = truncationTexts.join(' ');
             if (isTruncatedResponse(combinedTruncationText)) {
-              if (route.platform === 'longcat') {
-                // LongCat: exclude entire provider immediately on truncation
-                console.warn(`[Proxy] Truncation error mid-stream from LongCat — excluding entire LongCat provider for session, ending stream gracefully`);
-                banPlatformFromSession(normalizedMessages, routingMode, 'longcat', route.modelDbId);
-                addProviderModelsToSkipModels(skipModels, 'longcat');
-              } else {
-                // Non-LongCat: skip only this specific model
-                console.warn(`[Proxy] Truncation error mid-stream from ${route.platform} — skipping model ${route.modelId} only, ending stream gracefully`);
+              const action = evaluateThreadProtection({ platform: route.platform, kind: 'truncation', midStream: true, modelDbId: route.modelDbId, error: streamErr });
+              if (action.banProvider) {
+                console.warn(`[Proxy] Truncation error mid-stream from ${route.platform} — banning provider for session, ending stream gracefully (${action.reason})`);
+                banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
+                addProviderModelsToSkipModels(skipModels, route.platform);
+              }
+              if (action.skipModel) {
+                console.warn(`[Proxy] Truncation error mid-stream from ${route.platform} — skipping model ${route.modelId} only, ending stream gracefully (${action.reason})`);
                 skipModels.add(route.modelDbId);
               }
               try {
@@ -1585,16 +1593,22 @@ async function handleChatCompletion(
               return;
             }
           
-            // Mid-stream retryable error handling for LongCat
-            if (route.platform === 'longcat' && isRetryableStreamError(streamErr)) {
-              console.warn(`[Proxy] Mid-stream retryable error from LongCat — excluding entire LongCat provider for session`);
-              banPlatformFromSession(normalizedMessages, routingMode, 'longcat', route.modelDbId);
-              addProviderModelsToSkipModels(skipModels, 'longcat');
-              // Clear sticky preference if pinned to LongCat
-              if (preferredModel) {
+            // Mid-stream retryable error handling
+            if (isRetryableStreamError(streamErr)) {
+              const action = evaluateThreadProtection({ platform: route.platform, kind: 'retryable', midStream: true, modelDbId: route.modelDbId, error: streamErr });
+              if (action.banProvider) {
+                console.warn(`[Proxy] Mid-stream retryable error from ${route.platform} — banning provider for session (${action.reason})`);
+                banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
+                addProviderModelsToSkipModels(skipModels, route.platform);
+              }
+              if (action.skipModel) {
+                console.warn(`[Proxy] Mid-stream retryable error from ${route.platform} — skipping model ${route.modelId} (${action.reason})`);
+                skipModels.add(route.modelDbId);
+              }
+              if (action.clearStickyIfPinned && preferredModel) {
                 const db = getDb();
                 const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
-                if (prefRow?.platform === 'longcat') {
+                if (prefRow?.platform === route.platform) {
                   preferredModel = undefined;
                   preferredKeyId = undefined;
                 }
@@ -1683,48 +1697,52 @@ async function handleChatCompletion(
       logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, null, err.message);
 
       // 5xx failure detection
-      // LongCat: exclude entire provider immediately on any 5xx
-      // Non-LongCat: skip only this specific model, other models from same provider remain available
       const errStatus = getErrorStatus(err);
       if (errStatus && isBanEligibleStatus(errStatus)) {
-        if (route.platform === 'longcat') {
-          console.warn(`[Proxy] 5xx from LongCat — excluding entire LongCat provider for session`);
-          banPlatformFromSession(normalizedMessages, routingMode, 'longcat', route.modelDbId);
-          addProviderModelsToSkipModels(skipModels, 'longcat');
-          // Clear sticky if pinned to LongCat
-          if (preferredModel) {
-            const db = getDb();
-            const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
-            if (prefRow?.platform === 'longcat') {
-              preferredModel = undefined;
-              preferredKeyId = undefined;
-            }
-          }
-        } else {
-          console.warn(`[Proxy] 5xx from ${route.platform} — skipping model ${route.modelId} only`);
+        const action = evaluateThreadProtection({ platform: route.platform, kind: '5xx', midStream: false, modelDbId: route.modelDbId, error: err });
+        if (action.banProvider) {
+          console.warn(`[Proxy] 5xx from ${route.platform} — banning provider for session (${action.reason})`);
+          banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
+          addProviderModelsToSkipModels(skipModels, route.platform);
+        }
+        if (action.skipModel) {
+          console.warn(`[Proxy] 5xx from ${route.platform} — skipping model ${route.modelId} only (${action.reason})`);
           skipModels.add(route.modelDbId);
-       }
-     }
+        }
+        if (action.clearStickyIfPinned && preferredModel) {
+          const db = getDb();
+          const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
+          if (prefRow?.platform === route.platform) {
+            preferredModel = undefined;
+            preferredKeyId = undefined;
+          }
+        }
+      }
 
      if (isRetryableError(err)) {
-        // LongCat: on any retryable error, exclude entire provider immediately
         // Register global transient cooldown for this failing model
         transientModelCooldowns.set(route.modelDbId, Date.now() + TRANSIENT_COOLDOWN_MS);
         console.log(`[TransientCooldown] registered global cooldown for modelDbId=${route.modelDbId} (${TRANSIENT_COOLDOWN_MS / 1000}s)`);
-        if (route.platform === 'longcat') {
-          console.warn(`[Proxy] Retryable error from LongCat — excluding entire LongCat provider for session`);
-          banPlatformFromSession(normalizedMessages, routingMode, 'longcat', route.modelDbId);
-          addProviderModelsToSkipModels(skipModels, 'longcat');
-          if (preferredModel) {
-            const db = getDb();
-            const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
-            if (prefRow?.platform === 'longcat') {
-              preferredModel = undefined;
-              preferredKeyId = undefined;
-            }
+        const action = evaluateThreadProtection({ platform: route.platform, kind: 'retryable', midStream: false, modelDbId: route.modelDbId, error: err });
+        if (action.banProvider) {
+          console.warn(`[Proxy] Retryable error from ${route.platform} — banning provider for session (${action.reason})`);
+          banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
+          addProviderModelsToSkipModels(skipModels, route.platform);
+        }
+        if (action.skipModel) {
+          console.warn(`[Proxy] Retryable error from ${route.platform} — skipping model ${route.modelId} (${action.reason})`);
+          skipModels.add(route.modelDbId);
+        }
+        if (action.clearStickyIfPinned && preferredModel) {
+          const db = getDb();
+          const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
+          if (prefRow?.platform === route.platform) {
+            preferredModel = undefined;
+            preferredKeyId = undefined;
           }
-        } else {
-          // Non-LongCat: skip the specific key that failed
+        }
+        if (!action.banProvider) {
+          // Key-level retry handling for non-provider-ban platforms
           const skipId = `${route.platform}:${route.modelId}:${route.keyId}`;
           skipKeys.add(skipId);
           // Non-rate-limit, non-auth errors: skip the model so fallback moves to a different model
