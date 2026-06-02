@@ -1291,7 +1291,7 @@ async function handleChatCompletion(
       // Check if cooldown would exhaust all models
       let wouldExhaustAll = true;
       for (const id of allEnabledIds) {
-        if (!activeCooldownModels.has(id)) {
+        if (!activeCooldownModels.has(id) && !skipModels.has(id)) {
           wouldExhaustAll = false;
           break;
         }
@@ -1360,6 +1360,7 @@ async function handleChatCompletion(
         let lastChunkTimestamp = Date.now();
         let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
         let streamAborted = false;
+        const stallAbortController = new AbortController();
 
         // Clean up routine — idempotent, safe to call multiple times
         const cleanupStream = () => {
@@ -1374,9 +1375,10 @@ async function handleChatCompletion(
           const now = Date.now();
 
           if (now - lastChunkTimestamp > streamKeepaliveConfig.MAX_STREAM_STALL_MS) {
-            // Stall detected — terminate the stream
-            console.warn(`[Proxy] Stream stalled for ${now - lastChunkTimestamp}ms — aborting socket`);
+            // Stall detected — abort the upstream request via AbortController
+            console.warn(`[Proxy] Stream stalled for ${now - lastChunkTimestamp}ms — aborting via AbortController`);
             streamAborted = true;
+            stallAbortController.abort();
             cleanupStream();
 
             if (streamStarted) {
@@ -1394,19 +1396,14 @@ async function handleChatCompletion(
                   });
                 } else {
                   res.write(`data: ${JSON.stringify(payload)}\n\n`);
-                  res.write('data: [DONE]\n\n');;
+                  res.write('data: [DONE]\n\n');
                 }
                 res.end();
               } catch { /* Socket already gone */ }
-            } else {
-              // Pre-stream stall — no headers sent yet, response is still retryable
-              // Send a 504 so the client gets a proper error signal
-              try {
-                res.status(504).json({
-                  error: { message: `Upstream provider stalled before yielding any data from ${route.displayName}`, type: 'stream_timeout' },
-                });
-              } catch { /* Socket already gone */ }
             }
+            // Pre-stream stall: no headers sent, response still retryable.
+            // The AbortController rejection propagates as a synchronous exception
+            // within the for-await handler, which the outer retry loop catches.
           } else if (streamStarted) {
             // Write an SSE comment to keep the socket alive across intermediate proxies
             // Only write after SSE headers have been sent (streamStarted === true)
@@ -1421,6 +1418,7 @@ async function handleChatCompletion(
 
         // Attach client-disconnect listener
         req.on('close', () => {
+          stallAbortController.abort();
           cleanupStream();
         });
 
@@ -1430,7 +1428,49 @@ async function handleChatCompletion(
             { temperature, max_tokens, top_p, tools, tool_choice, parallel_tool_calls },
           );
 
-          for await (const chunk of gen) {
+          // Wrap each iterator step in a Promise.race against the stall AbortController
+          // for pre-stream timeout protection. When the stall handler aborts the
+          // controller before any chunk arrives, the race rejects immediately,
+          // throwing a synchronous exception within this try block that the outer
+          // retry loop catches and retries with fallback models.
+          while (true) {
+            // If already aborted between iterations, throw immediately
+            if (stallAbortController.signal.aborted && !streamStarted) {
+              throw Object.assign(
+                new Error(`Upstream provider stalled before yielding any data from ${route.displayName}`),
+                { status: 504, type: 'stream_timeout' },
+              );
+            }
+
+            let nextResult: IteratorResult<ChatCompletionChunk>;
+            if (!streamStarted) {
+              // Pre-stream: race against abort signal for stall protection
+              nextResult = await Promise.race([
+                gen.next(),
+                new Promise<never>((_, reject) => {
+                  if (stallAbortController.signal.aborted) {
+                    reject(Object.assign(
+                      new Error(`Upstream provider stalled before yielding any data from ${route.displayName}`),
+                      { status: 504, type: 'stream_timeout' },
+                    ));
+                    return;
+                  }
+                  stallAbortController.signal.addEventListener('abort', () => {
+                    reject(Object.assign(
+                      new Error(`Upstream provider stalled before yielding any data from ${route.displayName}`),
+                      { status: 504, type: 'stream_timeout' },
+                    ));
+                  }, { once: true });
+                }),
+              ]);
+            } else {
+              // Mid-stream: direct iteration (stall handled by setInterval error frame)
+              nextResult = await gen.next();
+            }
+
+            if (nextResult.done) break;
+
+            const chunk = nextResult.value;
             // Update chunk timestamp to reset stall timer
             lastChunkTimestamp = Date.now();
 
