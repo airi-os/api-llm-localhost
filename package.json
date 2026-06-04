@@ -1,6 +1,7 @@
 {
   "name": "freellmapi",
   "private": true,
+  "packageManager": "pnpm@11.1.3",
   "scripts": {
     "dev": "concurrently \"pnpm --filter server dev\" \"pnpm --filter client dev\"",
     "test": "pnpm --filter server test && pnpm --filter client test",
