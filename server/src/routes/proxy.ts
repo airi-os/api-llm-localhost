@@ -15,6 +15,7 @@ export const proxyRouter: Router = Router();
 // This prevents model switching mid-conversation which causes hallucination
 const stickySessionMap = new Map<string, { modelDbId: number; keyId?: number; bannedPlatforms?: Set<string>; lastUsed: number }>();
 const STICKY_TTL_MS = 30 * 60 * 1000; // 30 min session TTL
+const LONGCAT_STICKY_COOLDOWN_MS = 3 * 60 * 1000; // 3 min cooldown for LongCat sticky sessions
 const responseSessionMap = new Map<string, { messages: ChatMessage[]; lastUsed: number }>();
 
 // Tracks which sessions are currently making requests or streaming
@@ -27,11 +28,18 @@ const RESPONSE_SESSION_TTL_MS = 30 * 60 * 1000;
 const MAX_RESPONSE_SESSIONS = 500;
 const MAX_MODEL_RESPONSE_LOG_CHARS = 6000;
 
-function getSessionKey(messages: ChatMessage[], routingMode: RoutingMode): string {
-  // Sticky sessions only apply to smart/auto-smart routing.
-  // Balanced/auto uses free routing on every request.
-  if (routingMode === 'balanced') return '';
+// Stream keepalive / stall detection configuration
+export const streamKeepaliveConfig = {
+  KEEPALIVE_INTERVAL_MS: 100,
+  MAX_STREAM_STALL_MS: 500,
+};
 
+// Transient model cooldowns: modelDbId → expiry timestamp
+// Used to temporarily skip models that returned 5xx errors
+export const transientModelCooldowns = new Map<number, number>();
+export const TRANSIENT_COOLDOWN_MS = 15_000;
+
+function getSessionKey(messages: ChatMessage[], routingMode: RoutingMode): string {
   // Use the first user message as session identifier — clients like Hermes
   // re-send the full conversation each turn, so the first user message is
   // stable across turns. Hash the FULL message (not a 100-char slice) so
@@ -43,7 +51,7 @@ function getSessionKey(messages: ChatMessage[], routingMode: RoutingMode): strin
 
 function getStickyModel(messages: ChatMessage[], routingMode: RoutingMode): number | undefined {
   const key = getSessionKey(messages, routingMode);
-  if (!key) return undefined;
+  if (key === undefined) return undefined;
 
   const entry = stickySessionMap.get(key);
   if (!entry) {
@@ -136,8 +144,10 @@ function banPlatformFromSession(
 
 function addProviderModelsToSkipModels(skipModels: Set<number>, provider: string): void {
   const db = getDb();
+  // Use the same filtered set that routeRequest() uses: models in the fallback chain
+  // (fallback_config.enabled = 1 AND models.enabled = 1), not all enabled models.
   const providerModels = db.prepare(
-    'SELECT id FROM models WHERE platform = ? AND enabled = 1'
+    'SELECT m.id FROM fallback_config fc JOIN models m ON m.id = fc.model_db_id AND m.enabled = 1 WHERE fc.enabled = 1 AND m.platform = ?'
   ).all(provider) as Array<{ id: number }>;
   for (const m of providerModels) {
     skipModels.add(m.id);
@@ -1207,6 +1217,23 @@ async function handleChatCompletion(
     }
   }
 
+  // LongCat sticky session cooldown: if the session's preferred model is LongCat
+  // and it was used within the cooldown window, exclude LongCat from bandit routing
+  // but preserve the sticky preference so the request still routes to LongCat.
+  // Ban check above already clears preferredModel if banned, so this runs only when
+  // LongCat is not banned for the session.
+  if (preferredModel && sessionKey !== undefined) {
+    const db = getDb();
+    const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
+    if (prefRow?.platform === 'longcat') {
+      const entry = stickySessionMap.get(sessionKey);
+      if (entry && entry.modelDbId === preferredModel && Date.now() - entry.lastUsed <= LONGCAT_STICKY_COOLDOWN_MS) {
+        addProviderModelsToSkipModels(skipModels, 'longcat');
+        console.log(`[Sticky] LongCat cooldown active — excluding LongCat from bandit routing for this session`);
+      }
+    }
+  }
+
   // Clean up stale active requests (older than 10 minutes)
   const ACTIVE_REQUEST_TTL_MS = 10 * 60 * 1000;
   const activeNow = Date.now();
@@ -1255,20 +1282,18 @@ async function handleChatCompletion(
     }
   }
 
-  // Owl Alpha sticky cooldown: if the sticky model is on openrouter/owl-alpha and was used
-  // within the last 3 minutes, exclude owl-alpha from the bandit router for all
-  // other sessions. The current sticky session keeps its pinned owl-alpha route.
-  if (preferredModel) {
-    const db = getDb();
-    const prefRow = db.prepare('SELECT platform, model_id FROM models WHERE id = ?').get(preferredModel) as { platform: string; model_id: string } | undefined;
-    if (prefRow?.platform === 'openrouter' && prefRow?.model_id === 'owl-alpha') {
-      const cooldownSessionKey = getSessionKey(normalizedMessages, routingMode);
-      const cooldownEntry = cooldownSessionKey ? stickySessionMap.get(cooldownSessionKey) : undefined;
-      if (cooldownEntry && Date.now() - cooldownEntry.lastUsed < LONGCAT_STICKY_COOLDOWN_MS) {
-        const ageMs = Date.now() - cooldownEntry.lastUsed;
-        skipModels.add(preferredModel);
-        console.log(`[Sticky] Owl Alpha cooldown active — excluding openrouter/owl-alpha from bandit routing for other sessions | session=${cooldownSessionKey?.slice(0, 8)} | lastUsed=${ageMs}ms ago`);
+  // Inject transient model cooldowns into skipModels
+  {
+    const now = Date.now();
+    for (const [id, exp] of transientModelCooldowns) {
+      if (now > exp) {
+        transientModelCooldowns.delete(id);
+      } else {
+        skipModels.add(id);
       }
+    }
+    if (skipModels.size > 0) {
+      console.log(`[Proxy] transient cooldowns active for model IDs: [${Array.from(skipModels).join(",")}]`);
     }
   }
 
@@ -1336,28 +1361,71 @@ async function handleChatCompletion(
             { temperature, max_tokens, top_p, tools, tool_choice, parallel_tool_calls },
           );
 
-          for await (const chunk of gen) {
-            if (!streamStarted) {
-              ttfbMs = Date.now() - start;
-              res.setHeader('Content-Type', 'text/event-stream');
-              res.setHeader('Cache-Control', 'no-cache');
-              res.setHeader('Connection', 'keep-alive');
-              res.setHeader('X-Routed-Via', `${route.platform}/${route.modelId}`);
-              if (attempt > 0) res.setHeader('X-Fallback-Attempts', String(attempt));
-              if (responseStreamContext) {
-                writeResponseStreamStart(res, responseStreamContext, route.modelId);
-              }
-              streamStarted = true;
+          let lastChunkTime = Date.now();
+          let stalled = false;
+          const keepaliveTimer = setInterval(() => {
+            if (stalled) {
+              clearInterval(keepaliveTimer);
+              return;
             }
-            const deltaToolCalls = chunk.choices[0]?.delta?.tool_calls ?? [];
-            if (deltaToolCalls.length > 0) sawToolCalls = true;
-            if (responseStreamContext) {
-              totalOutputTokens += writeResponseStreamChunk(res, responseStreamContext, chunk);
-            } else {
-              const text = chunk.choices[0]?.delta?.content ?? '';
-              if (text) streamedText += text;
-              totalOutputTokens += Math.ceil(text.length / 4);
-              res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+            const elapsed = Date.now() - lastChunkTime;
+            if (elapsed >= streamKeepaliveConfig.MAX_STREAM_STALL_MS) {
+              stalled = true;
+              clearInterval(keepaliveTimer);
+              if (streamStarted) {
+                const payload = { error: { message: 'Stream stalled: no data received within timeout', type: 'stream_timeout' } };
+                try {
+                  if (responseStreamContext) {
+                    writeResponseStreamEvent(res, {
+                      type: 'response.failed',
+                      response: {
+                        id: responseStreamContext.responseId,
+                        status: 'failed',
+                        error: payload.error,
+                      },
+                    });
+                  } else {
+                    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+                    res.write('data: [DONE]\n\n');
+                  }
+                  res.end();
+                } catch { /* socket gone */ }
+              }
+              return;
+            }
+            if (streamStarted && elapsed >= streamKeepaliveConfig.KEEPALIVE_INTERVAL_MS) {
+              try { res.write(': keep-alive\n\n'); } catch { /* socket gone */ }
+            }
+          }, streamKeepaliveConfig.KEEPALIVE_INTERVAL_MS);
+
+          try {
+            for await (const chunk of gen) {
+              if (stalled) break;
+              lastChunkTime = Date.now();
+              if (!streamStarted) {
+                ttfbMs = Date.now() - start;
+                res.setHeader('X-Routed-Via', `${route.platform}/${route.modelId}`);
+                if (attempt > 0) res.setHeader('X-Fallback-Attempts', String(attempt));
+                if (responseStreamContext) {
+                  writeResponseStreamStart(res, responseStreamContext, route.modelId);
+                }
+                streamStarted = true;
+              }
+              const deltaToolCalls = chunk.choices[0]?.delta?.tool_calls ?? [];
+              if (deltaToolCalls.length > 0) sawToolCalls = true;
+              if (responseStreamContext) {
+                totalOutputTokens += writeResponseStreamChunk(res, responseStreamContext, chunk);
+              } else {
+                const text = chunk.choices[0]?.delta?.content ?? '';
+                if (text) streamedText += text;
+                totalOutputTokens += Math.ceil(text.length / 4);
+                res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+              }
+            }
+          } finally {
+            clearInterval(keepaliveTimer);
+            if (stalled) {
+              try { gen.return(); } catch { /* already closed */ }
             }
           }
 
@@ -1378,6 +1446,18 @@ async function handleChatCompletion(
                   skipModels.add(route.modelDbId);
                 }
             }
+          }
+
+          if (stalled && !streamStarted) {
+            // Pre-stream stall: no headers sent yet, return 504 so the retry loop can try another model
+            res.status(504).json({
+              error: {
+                message: 'Stream timed out: no data received from provider',
+                type: 'stream_timeout',
+              },
+            });
+            logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, totalOutputTokens, Date.now() - start, ttfbMs, 'Pre-stream stall timeout');
+            return;
           }
 
           if (!streamStarted) {
@@ -1631,68 +1711,76 @@ async function handleChatCompletion(
            }
          }
        }
-    } catch (err: any) {
+     }
+   } catch (err: any) {
       const latency = Date.now() - start;
       logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, null, err.message);
 
       // 5xx failure detection
-        const errStatus = getErrorStatus(err);
-        if (errStatus && isBanEligibleStatus(errStatus)) {
-          const action = evaluateThreadProtection({ platform: route.platform, kind: '5xx', midStream: false, modelDbId: route.modelDbId, error: err });
-          if (action.banProvider) {
-            console.warn(`[Proxy] 5xx from ${route.platform} — banning provider for session (${action.reason})`);
-            banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
-            addProviderModelsToSkipModels(skipModels, route.platform);
-          }
-          if (action.skipModel) {
-            console.warn(`[Proxy] 5xx from ${route.platform} — skipping model ${route.modelId} only (${action.reason})`);
-            skipModels.add(route.modelDbId);
-          }
-          if (action.clearStickyIfPinned && preferredModel) {
-            const db = getDb();
-            const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
-            if (prefRow?.platform === route.platform) {
-              preferredModel = undefined;
-              preferredKeyId = undefined;
-            }
-          }
-        }
+         const errStatus = getErrorStatus(err);
+         const isTransientCooldownEligible = (errStatus !== undefined && errStatus >= 500 && errStatus < 600) || errStatus === undefined;
+         if (errStatus && isBanEligibleStatus(errStatus)) {
+           const action = evaluateThreadProtection({ platform: route.platform, kind: '5xx', midStream: false, modelDbId: route.modelDbId, error: err });
+           if (action.banProvider) {
+             console.warn(`[Proxy] 5xx from ${route.platform} — banning provider for session (${action.reason})`);
+             banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
+             addProviderModelsToSkipModels(skipModels, route.platform);
+           }
+           if (action.skipModel) {
+             console.warn(`[Proxy] 5xx from ${route.platform} — skipping model ${route.modelId} only (${action.reason})`);
+             skipModels.add(route.modelDbId);
+           }
+           if (action.clearStickyIfPinned && preferredModel) {
+             const db = getDb();
+             const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
+             if (prefRow?.platform === route.platform) {
+               preferredModel = undefined;
+               preferredKeyId = undefined;
+             }
+           }
+           // Register transient cooldown for any 5xx ban-eligible error
+           transientModelCooldowns.set(route.modelDbId, Date.now() + TRANSIENT_COOLDOWN_MS);
+         } else if (isTransientCooldownEligible) {
+           // Connection failures (undefined status) and non-ban-eligible 5xx (e.g. 501, 505+)
+           // still trigger transient cooldown even if not session-banned
+           transientModelCooldowns.set(route.modelDbId, Date.now() + TRANSIENT_COOLDOWN_MS);
+         }
 
-       if (isRetryableError(err)) {
-          // Register global transient cooldown for this failing model
-          transientModelCooldowns.set(route.modelDbId, Date.now() + TRANSIENT_COOLDOWN_MS);
-          console.log(`[TransientCooldown] registered global cooldown for modelDbId=${route.modelDbId} (${TRANSIENT_COOLDOWN_MS / 1000}s)`);
-          const action = evaluateThreadProtection({ platform: route.platform, kind: 'retryable', midStream: false, modelDbId: route.modelDbId, error: err });
-          if (action.banProvider) {
-            console.warn(`[Proxy] Retryable error from ${route.platform} — banning provider for session (${action.reason})`);
-            banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
-            addProviderModelsToSkipModels(skipModels, route.platform);
-          }
-          if (action.skipModel) {
-            console.warn(`[Proxy] Retryable error from ${route.platform} — skipping model ${route.modelId} (${action.reason})`);
-            skipModels.add(route.modelDbId);
-          }
-          if (action.clearStickyIfPinned && preferredModel) {
-            const db = getDb();
-            const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
-            if (prefRow?.platform === route.platform) {
-              preferredModel = undefined;
-              preferredKeyId = undefined;
-            }
-          }
-          if (!action.banProvider) {
-            // Key-level retry handling for non-provider-ban platforms
-            const skipId = `${route.platform}:${route.modelId}:${route.keyId}`;
-            skipKeys.add(skipId);
-            // Non-rate-limit, non-auth errors: skip the model so fallback moves to a different model
-            if (shouldSkipModelOnRetry(err)) {
-              skipModels.add(route.modelDbId);
-            }
-            // Rate-limit errors: cooldown this key but allow other keys for the same model
-            if (isRateLimitError(err)) {
-              setCooldown(route.platform, route.modelId, route.keyId, 120_000);
-            }
-          }
+        if (isRetryableError(err)) {
+           // Register global transient cooldown for this failing model
+           transientModelCooldowns.set(route.modelDbId, Date.now() + TRANSIENT_COOLDOWN_MS);
+           console.log(`[TransientCooldown] registered global cooldown for modelDbId=${route.modelDbId} (${TRANSIENT_COOLDOWN_MS / 1000}s)`);
+           const action = evaluateThreadProtection({ platform: route.platform, kind: 'retryable', midStream: false, modelDbId: route.modelDbId, error: err });
+           if (action.banProvider) {
+             console.warn(`[Proxy] Retryable error from ${route.platform} — banning provider for session (${action.reason})`);
+             banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
+             addProviderModelsToSkipModels(skipModels, route.platform);
+           }
+           if (action.skipModel) {
+             console.warn(`[Proxy] Retryable error from ${route.platform} — skipping model ${route.modelId} (${action.reason})`);
+             skipModels.add(route.modelDbId);
+           }
+           if (action.clearStickyIfPinned && preferredModel) {
+             const db = getDb();
+             const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
+             if (prefRow?.platform === route.platform) {
+               preferredModel = undefined;
+               preferredKeyId = undefined;
+             }
+           }
+           if (!action.banProvider) {
+             // Key-level retry handling for non-provider-ban platforms
+             const skipId = `${route.platform}:${route.modelId}:${route.keyId}`;
+             skipKeys.add(skipId);
+             // Non-rate-limit, non-auth errors: skip the model so fallback moves to a different model
+             if (shouldSkipModelOnRetry(err)) {
+               skipModels.add(route.modelDbId);
+             }
+             // Rate-limit errors: cooldown this key but allow other keys for the same model
+             if (isRateLimitError(err)) {
+               setCooldown(route.platform, route.modelId, route.keyId, 120_000);
+             }
+           }
         // Auth errors (401/403): clear the sticky key for this session
         // so the retry unpins the broken key and falls through to round-robin.
         if (isAuthError(err)) {

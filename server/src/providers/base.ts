@@ -139,9 +139,11 @@ export abstract class BaseProvider {
     const error = new Error(
       `${this.name} API error (wrapped in 200): ${message}`,
     ) as ProviderApiError;
+    const rawCode = (errPayload as Record<string, unknown>).code;
+    const parsedCode = typeof rawCode === 'number' ? rawCode : Number(rawCode);
     error.status =
       typeof errPayload === 'object' && errPayload !== null && 'code' in (errPayload as Record<string, unknown>)
-        ? Number((errPayload as Record<string, unknown>).code)
+        ? (Number.isFinite(parsedCode) ? parsedCode : 200)
         : 200;
     error.provider = this.name;
     error.responseBody = body;

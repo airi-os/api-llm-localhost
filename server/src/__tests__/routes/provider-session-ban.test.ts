@@ -372,15 +372,17 @@ describe('Provider session ban functionality', () => {
   });
 
   // ---------- Balanced mode: sticky sessions disabled ----------
-  describe('Balanced mode: sticky session operations are skipped', () => {
+  describe('Balanced mode: sticky session operations use real keys', () => {
     const makeMessages = (content: string) => [{ role: 'user' as const, content }];
 
-    it('getSessionKey() returns empty string for balanced mode', () => {
+    it('getSessionKey() returns a real hash for balanced mode', () => {
       const messages = makeMessages('Hello balanced');
-      expect(getSessionKey(messages, 'balanced')).toBe('');
+      const key = getSessionKey(messages, 'balanced');
+      expect(key).not.toBe('');
+      expect(key).toMatch(/^[0-9a-f]{40}$/);
     });
 
-    it('getStickyModel() returns undefined for balanced mode even when smart-mode sticky entry exists for same messages', () => {
+    it('getStickyModel() returns undefined for balanced mode when no balanced-mode sticky entry exists (even if smart-mode entry exists)', () => {
       const messages = makeMessages('Hello dual-mode');
       // Set up a sticky entry under smart mode for the same messages
       const smartKey = getSessionKey(messages, 'smart');
@@ -389,29 +391,27 @@ describe('Provider session ban functionality', () => {
         modelDbId: 42,
         lastUsed: Date.now(),
       });
-      // Balanced mode should return undefined despite the smart-mode entry existing
+      // Balanced mode uses a different key, so no sticky model should be found
       expect(getStickyModel(messages, 'balanced')).toBeUndefined();
     });
 
-    it('isSessionBannedFromPlatform() returns false for balanced mode', () => {
+    it('isSessionBannedFromPlatform() returns false for balanced mode when no entry exists', () => {
       const messages = makeMessages('Hello ban-check');
-      // Even if we manually insert a balanced-mode key (which shouldn't happen in practice),
-      // isSessionBannedFromPlatform should return false because getSessionKey returns ''
       expect(isSessionBannedFromPlatform(messages, 'balanced', 'longcat')).toBe(false);
     });
 
-    it('banPlatformFromSession() does not create entries for balanced mode', () => {
+    it('banPlatformFromSession() creates entries for balanced mode', () => {
       const messages = makeMessages('Hello ban-test');
       banPlatformFromSession(messages, 'balanced', 'longcat', 99);
-      // No entries should have been created
-      expect(stickySessionMap.size).toBe(0);
+      // Entry should have been created with a real key
+      expect(stickySessionMap.size).toBe(1);
     });
 
-    it('setStickyModel() does not create entries for balanced mode', () => {
+    it('setStickyModel() creates entries for balanced mode', () => {
       const messages = makeMessages('Hello set-test');
       setStickyModel(messages, 7, 'balanced', 3);
-      // No entries should have been created
-      expect(stickySessionMap.size).toBe(0);
+      // Entry should have been created with a real key
+      expect(stickySessionMap.size).toBe(1);
     });
   });
 });
