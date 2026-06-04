@@ -181,9 +181,9 @@ export function refreshStatsCache(db: Database, force = false): void {
   const rows = db.prepare(`
     SELECT platform, model_id,
       COUNT(*) as raw_total,
-      SUM(MAX(0, MIN(1.0, 1.0 - (julianday('now') - julianday(created_at)) / 7.0)))) as total,
+      SUM(MAX(0, MIN(1.0, 1.0 - (julianday('now') - julianday(created_at)) / 7.0))) as total,
       SUM(CASE WHEN status = 'success'
-        THEN MAX(0, MIN(1.0, 1.0 - (julianday('now') - julianday(created_at)) / 7.0)))
+        THEN MAX(0, MIN(1.0, 1.0 - (julianday('now') - julianday(created_at)) / 7.0))
         ELSE 0 END) as successes,
       CASE
         WHEN SUM(CASE WHEN status = 'success' THEN latency_ms ELSE 0 END) > 0
@@ -512,12 +512,15 @@ export function routeRequest(
     WHERE fc.enabled = 1
   `).all() as ChainRow[];
 
-  // T1.2: In balanced mode, exclude LongCat platform and Owl Alpha model
+  // T1.2: In balanced mode, exclude LongCat platform and Owl Alpha model.
+  // Exception: if the sticky session preferred model is on an excluded platform,
+  // allow it through so the session can still route to its preferred model.
   const filteredChain = routingMode === 'balanced'
     ? chain.filter(entry => {
-        if (EXCLUDED_FROM_BALANCED.has(entry.platform)) return false;
+        const isPreferred = entry.model_db_id === preferredModelDbId;
+        if (EXCLUDED_FROM_BALANCED.has(entry.platform) && !isPreferred) return false;
         const excludedModels = EXCLUDED_MODELS_FROM_BALANCED.get(entry.platform);
-        if (excludedModels?.has(entry.model_id)) return false;
+        if (excludedModels?.has(entry.model_id) && !isPreferred) return false;
         return true;
       })
     : chain;
