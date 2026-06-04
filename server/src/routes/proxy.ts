@@ -2,7 +2,6 @@ import crypto from 'crypto';
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
-import { evaluateThreadProtection } from '../services/threadProtection.js';
 import type { ChatCompletionChunk, ChatCompletionResponse, ChatMessage, ChatToolCall, ChatToolDefinition } from '@freellmapi/shared/types.js';
 import { routeRequest, recordSuccess, type RouteResult, type RoutingMode } from '../services/router.js';
 import { recordRequest, recordTokens, setCooldown } from '../services/ratelimit.js';
@@ -16,19 +15,15 @@ export const proxyRouter: Router = Router();
 // This prevents model switching mid-conversation which causes hallucination
 const stickySessionMap = new Map<string, { modelDbId: number; keyId?: number; bannedPlatforms?: Set<string>; lastUsed: number }>();
 const STICKY_TTL_MS = 30 * 60 * 1000; // 30 min session TTL
-const THREAD_COOLDOWN_MS = 3 * 60 * 1000; // 3 min — bypass sticky preference for LongCat if session was used within this window
-// Stream heartbeat & stall protection config — exported for test overrides
-export const streamKeepaliveConfig = {
-  KEEPALIVE_INTERVAL_MS: 15000, // Send a heartbeat comment every 15s of inactivity
-  MAX_STREAM_STALL_MS: 45000,   // Abort the stream if stalled for 45s
-};
 const responseSessionMap = new Map<string, { messages: ChatMessage[]; lastUsed: number }>();
+
+// Tracks which sessions are currently making requests or streaming
+// Key: sessionKey (hash) -> details
+const activeRequests = new Map<string, { platform: string; modelId: string; startTime: number }>();
 const responseItemMap = new Map<string, ChatMessage>();
 const RESPONSE_SESSION_TTL_MS = 30 * 60 * 1000;
 const MAX_RESPONSE_SESSIONS = 500;
 const MAX_MODEL_RESPONSE_LOG_CHARS = 6000;
-const transientModelCooldowns = new Map<number, number>(); // modelDbId -> expiryTimestamp
-const TRANSIENT_COOLDOWN_MS = 15000; // 15 seconds
 
 function getSessionKey(messages: ChatMessage[], routingMode: RoutingMode): string {
   // Sticky sessions only apply to smart/auto-smart routing.
@@ -187,8 +182,6 @@ export {
   setStickyModel,
   clearStickyModel,
   stickySessionMap,
-  transientModelCooldowns,
-  TRANSIENT_COOLDOWN_MS,
 };
 
 function clearStickyModel(messages: ChatMessage[], routingMode: RoutingMode) {
@@ -1202,31 +1195,6 @@ async function handleChatCompletion(
     }
   }
 
-  // Transient cooldown: inject globally-cooled models into skipModels (lazy pruning)
-  {
-    const now = Date.now();
-    for (const [modelDbId, expiry] of transientModelCooldowns) {
-      if (now > expiry) {
-        transientModelCooldowns.delete(modelDbId);
-      } else {
-        skipModels.add(modelDbId);
-      }
-    }
-  }
-
-  // If the preferred (sticky) model is on global cooldown, clear the preference
-  if (preferredModel && transientModelCooldowns.has(preferredModel)) {
-    const now = Date.now();
-    const expiry = transientModelCooldowns.get(preferredModel)!;
-    if (now < expiry) {
-      console.log(`[TransientCooldown] preferredModel=${preferredModel} is on global cooldown (${Math.round((expiry - now) / 1000)}s remaining) — clearing sticky preference`);
-      preferredModel = undefined;
-      preferredKeyId = undefined;
-    } else {
-      transientModelCooldowns.delete(preferredModel);
-    }
-  }
-
   if (preferredModel) {
     const db = getDb();
     const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
@@ -1237,58 +1205,39 @@ async function handleChatCompletion(
     }
   }
 
-  // ── Thread protection: dynamically exclude models actively used by other sessions ──
-  // If another sticky session has used a model within THREAD_COOLDOWN_MS, that model
-  // becomes a soft-exclusion candidate. Exhaustion protection ensures we never block
-  // all available models — preferring shared access over outright failure.
-  {
-    const currentSessionKey = getSessionKey(normalizedMessages, routingMode);
-    const activeCooldownModels = new Set<number>();
-    const threadNow = Date.now();
+  // Pure Active-Request LongCat Safeguard: Exclude LongCat from bandit routing
+  // for this request ONLY if another session is actively using it right now.
+  let otherSessionUsingLongCat = false;
 
-    for (const [key, entry] of stickySessionMap) {
-      // Self-preservation: never exclude the current session's own pinned model
-      if (currentSessionKey && key === currentSessionKey) continue;
-
-      // Expired entries are irrelevant — the session has gone quiet
-      if (threadNow - entry.lastUsed > STICKY_TTL_MS) continue;
-
-      // Only consider entries within the cooldown window
-      if (threadNow - entry.lastUsed < THREAD_COOLDOWN_MS) {
-        activeCooldownModels.add(entry.modelDbId);
-      }
+  for (const [sKey, active] of activeRequests.entries()) {
+    if (sKey !== sessionKey && active.platform === 'longcat') {
+      otherSessionUsingLongCat = true;
+      break;
     }
+  }
 
-    // Exhaustion protection: if cooldown would block ALL available models,
-    // clear the set and let the request through rather than failing outright.
-    if (activeCooldownModels.size > 0) {
-      const db = getDb();
-      const allEnabled = db.prepare('SELECT id FROM models WHERE enabled = 1').all() as Array<{ id: number }>;
-      const allEnabledIds = new Set(allEnabled.map(m => m.id));
+  if (otherSessionUsingLongCat) {
+    addProviderModelsToSkipModels(skipModels, 'longcat');
+    console.log(`[Sticky] LongCat protection active — excluding LongCat from bandit routing because another session is actively using it`);
+  }
 
-      // Remove the current preferred model from cooldown consideration
-      if (preferredModel !== undefined) {
-        activeCooldownModels.delete(preferredModel);
-      }
+  // Pure Active-Request Owl Alpha Safeguard: Exclude openrouter/owl-alpha
+  // from bandit routing for this request ONLY if another session is actively using it right now.
+  let otherSessionUsingOwl = false;
 
-      // Check if cooldown would exhaust all models
-      let wouldExhaustAll = true;
-      for (const id of allEnabledIds) {
-        if (!activeCooldownModels.has(id)) {
-          wouldExhaustAll = false;
-          break;
-        }
-      }
+  for (const [sKey, active] of activeRequests.entries()) {
+    if (sKey !== sessionKey && active.platform === 'openrouter' && active.modelId === 'owl-alpha') {
+      otherSessionUsingOwl = true;
+      break;
+    }
+  }
 
-      if (wouldExhaustAll) {
-        console.log(`[ThreadProtection] cooldown would exhaust all ${allEnabled.length} models — clearing cooldown exclusions`);
-        activeCooldownModels.clear();
-      } else {
-        for (const modelDbId of activeCooldownModels) {
-          skipModels.add(modelDbId);
-        }
-        console.log(`[ThreadProtection] excluding ${activeCooldownModels.size} model(s) from routing: [${[...activeCooldownModels].join(',')}]`);
-      }
+  if (otherSessionUsingOwl) {
+    const db = getDb();
+    const owlRow = db.prepare("SELECT id FROM models WHERE platform = 'openrouter' AND model_id = 'owl-alpha'").get() as { id: number } | undefined;
+    if (owlRow) {
+      skipModels.add(owlRow.id);
+      console.log(`[Sticky] Owl Alpha protection active — excluding openrouter/owl-alpha from bandit routing because another session is actively using it`);
     }
   }
 
@@ -1357,86 +1306,22 @@ async function handleChatCompletion(
         let sawToolCalls = false;
         let streamStarted = false;
         let ttfbMs: number | null = null;
-        let lastChunkTimestamp = Date.now();
-        let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
-        let streamAborted = false;
-
-        // Clean up routine — idempotent, safe to call multiple times
-        const cleanupStream = () => {
-          if (heartbeatInterval) {
-            clearInterval(heartbeatInterval);
-            heartbeatInterval = null;
-          }
-        };
-
-        // Set up heartbeat and stall monitor
-        heartbeatInterval = setInterval(() => {
-          const now = Date.now();
-
-          if (now - lastChunkTimestamp > streamKeepaliveConfig.MAX_STREAM_STALL_MS) {
-            // Stall detected — terminate the stream
-            console.warn(`[Proxy] Stream stalled for ${now - lastChunkTimestamp}ms — aborting socket`);
-            streamAborted = true;
-            cleanupStream();
-
-            if (streamStarted) {
-              // Mid-stream stall — write error frame and close
-              const payload = { error: { message: 'Upstream stream stalled', type: 'stream_timeout' } };
-              try {
-                if (responseStreamContext) {
-                  writeResponseStreamEvent(res, {
-                    type: 'response.failed',
-                    response: {
-                      id: responseStreamContext.responseId,
-                      status: 'failed',
-                      error: payload.error,
-                    },
-                  });
-                } else {
-                  res.write(`data: ${JSON.stringify(payload)}\n\n`);
-                  res.write('data: [DONE]\n\n');;
-                }
-                res.end();
-              } catch { /* Socket already gone */ }
-            } else {
-              // Pre-stream stall — no headers sent yet, response is still retryable
-              // Send a 504 so the client gets a proper error signal
-              try {
-                res.status(504).json({
-                  error: { message: `Upstream provider stalled before yielding any data from ${route.displayName}`, type: 'stream_timeout' },
-                });
-              } catch { /* Socket already gone */ }
-            }
-          } else if (streamStarted) {
-            // Write an SSE comment to keep the socket alive across intermediate proxies
-            // Only write after SSE headers have been sent (streamStarted === true)
-            try {
-              res.write(': keep-alive\n\n');
-            } catch {
-              // Client disconnected — clean up
-              cleanupStream();
-            }
-          }
-        }, streamKeepaliveConfig.KEEPALIVE_INTERVAL_MS);
-
-        // Attach client-disconnect listener
-        req.on('close', () => {
-          cleanupStream();
-        });
-
         try {
+          // Register the session as active
+          if (sessionKey) {
+            activeRequests.set(sessionKey, {
+              platform: route.platform,
+              modelId: route.modelId,
+              startTime: Date.now()
+            });
+          }
+
           const gen = route.provider.streamChatCompletion(
             route.apiKey, normalizedMessages, route.modelId,
             { temperature, max_tokens, top_p, tools, tool_choice, parallel_tool_calls },
           );
 
           for await (const chunk of gen) {
-            // Update chunk timestamp to reset stall timer
-            lastChunkTimestamp = Date.now();
-
-            // If stall handler already terminated the stream, break out
-            if (streamAborted) break;
-
             if (!streamStarted) {
               ttfbMs = Date.now() - start;
               res.setHeader('Content-Type', 'text/event-stream');
@@ -1461,31 +1346,22 @@ async function handleChatCompletion(
             }
           }
 
-          // Clear heartbeat on successful loop completion
-          cleanupStream();
-
-          // If stall handler already ended the response, skip the normal completion path
-          if (streamAborted) {
-            logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, totalOutputTokens, Date.now() - start, ttfbMs, 'stream_stalled');
-            return;
-          }
-
           // Check for truncated response content after stream completes.
           // The stream has already been sent to the client — no retry within same request.
           // Future requests in this session will route to other providers.
           {
             const streamTextToCheck = responseStreamContext ? responseStreamContext.outputText : streamedText;
             if (isTruncatedResponse(streamTextToCheck)) {
-               const action = evaluateThreadProtection({ platform: route.platform, kind: 'truncation', midStream: false, modelDbId: route.modelDbId });
-               if (action.banProvider) {
-                 console.warn(`[Proxy] Truncated stream content detected from ${route.platform} — banning provider for session (${action.reason})`);
-                 banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
-                 addProviderModelsToSkipModels(skipModels, route.platform);
-               }
-               if (action.skipModel) {
-                 console.warn(`[Proxy] Truncated stream content detected from ${route.platform} — skipping model ${route.modelId} for session (${action.reason})`);
-                 skipModels.add(route.modelDbId);
-               }
+                const action = evaluateThreadProtection({ platform: route.platform, kind: 'truncation', midStream: false, modelDbId: route.modelDbId });
+                if (action.banProvider) {
+                  console.warn(`[Proxy] Truncated stream content detected from ${route.platform} — banning provider for session (${action.reason})`);
+                  banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
+                  addProviderModelsToSkipModels(skipModels, route.platform);
+                }
+                if (action.skipModel) {
+                  console.warn(`[Proxy] Truncated stream content detected from ${route.platform} — skipping model ${route.modelId} for session (${action.reason})`);
+                  skipModels.add(route.modelDbId);
+                }
             }
           }
 
@@ -1541,35 +1417,36 @@ async function handleChatCompletion(
           logRequest(route.platform, route.modelId, 'success', estimatedInputTokens, totalOutputTokens, Date.now() - start, ttfbMs, null);
           return;
         } catch (streamErr: any) {
-          cleanupStream();
           if (streamStarted) {
             // 5xx failure detection for mid-stream errors
+            // LongCat: exclude entire provider immediately on any 5xx
+            // Non-LongCat: skip only this specific model, other models from same provider remain available
             const streamErrStatus = getErrorStatus(streamErr);
             if (streamErrStatus && isBanEligibleStatus(streamErrStatus)) {
-               const action = evaluateThreadProtection({ platform: route.platform, kind: '5xx', midStream: true, modelDbId: route.modelDbId, error: streamErr });
-               if (action.banProvider) {
-                 console.warn(`[Proxy] Mid-stream 5xx from ${route.platform} — banning provider for session (${action.reason})`);
-                 banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
-                 addProviderModelsToSkipModels(skipModels, route.platform);
-               }
-               if (action.skipModel) {
-                 console.warn(`[Proxy] Mid-stream 5xx from ${route.platform} — skipping model ${route.modelId} only (${action.reason})`);
-                 skipModels.add(route.modelDbId);
-               }
-               if (action.clearStickyIfPinned && preferredModel) {
-                 const db = getDb();
-                 const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
-                 if (prefRow?.platform === route.platform) {
-                   preferredModel = undefined;
-                   preferredKeyId = undefined;
-                 }
-               }
-             // Register global transient cooldown for any 5xx mid-stream error
-             transientModelCooldowns.set(route.modelDbId, Date.now() + TRANSIENT_COOLDOWN_MS);
-             console.log(`[TransientCooldown] registered global cooldown for modelDbId=${route.modelDbId} (${TRANSIENT_COOLDOWN_MS / 1000}s)`);
-           }
+                const action = evaluateThreadProtection({ platform: route.platform, kind: '5xx', midStream: true, modelDbId: route.modelDbId, error: streamErr });
+                if (action.banProvider) {
+                  console.warn(`[Proxy] Mid-stream 5xx from ${route.platform} — banning provider for session (${action.reason})`);
+                  banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
+                  addProviderModelsToSkipModels(skipModels, route.platform);
+                }
+                if (action.skipModel) {
+                  console.warn(`[Proxy] Mid-stream 5xx from ${route.platform} — skipping model ${route.modelId} only (${action.reason})`);
+                  skipModels.add(route.modelDbId);
+                }
+                if (action.clearStickyIfPinned && preferredModel) {
+                  const db = getDb();
+                  const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
+                  if (prefRow?.platform === route.platform) {
+                    preferredModel = undefined;
+                    preferredKeyId = undefined;
+                  }
+                }
+              // Register global transient cooldown for any 5xx mid-stream error
+              transientModelCooldowns.set(route.modelDbId, Date.now() + TRANSIENT_COOLDOWN_MS);
+              console.log(`[TransientCooldown] registered global cooldown for modelDbId=${route.modelDbId} (${TRANSIENT_COOLDOWN_MS / 1000}s)`);
+            }
 
-           // Generalized truncation detection for any provider (not just LongCat)
+            // Generalized truncation detection for any provider (not just LongCat)
             // Aggregate all possible error text sources for comprehensive detection
             const truncationTexts: string[] = [];
             if (streamErr instanceof Error) {
@@ -1584,16 +1461,16 @@ async function handleChatCompletion(
             truncationTexts.push(String(streamErr));
             const combinedTruncationText = truncationTexts.join(' ');
             if (isTruncatedResponse(combinedTruncationText)) {
-               const action = evaluateThreadProtection({ platform: route.platform, kind: 'truncation', midStream: true, modelDbId: route.modelDbId, error: streamErr });
-               if (action.banProvider) {
-                 console.warn(`[Proxy] Truncation error mid-stream from ${route.platform} — banning provider for session, ending stream gracefully (${action.reason})`);
-                 banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
-                 addProviderModelsToSkipModels(skipModels, route.platform);
-               }
-               if (action.skipModel) {
-                 console.warn(`[Proxy] Truncation error mid-stream from ${route.platform} — skipping model ${route.modelId} only, ending stream gracefully (${action.reason})`);
-                 skipModels.add(route.modelDbId);
-               }
+                const action = evaluateThreadProtection({ platform: route.platform, kind: 'truncation', midStream: true, modelDbId: route.modelDbId, error: streamErr });
+                if (action.banProvider) {
+                  console.warn(`[Proxy] Truncation error mid-stream from ${route.platform} — banning provider for session, ending stream gracefully (${action.reason})`);
+                  banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
+                  addProviderModelsToSkipModels(skipModels, route.platform);
+                }
+                if (action.skipModel) {
+                  console.warn(`[Proxy] Truncation error mid-stream from ${route.platform} — skipping model ${route.modelId} only, ending stream gracefully (${action.reason})`);
+                  skipModels.add(route.modelDbId);
+                }
               try {
                 if (responseStreamContext) {
                   writeResponseStreamEvent(res, {
@@ -1614,22 +1491,16 @@ async function handleChatCompletion(
               return;
             }
           
-            // Mid-stream retryable error handling
-            if (isRetryableStreamError(streamErr)) {
-              const action = evaluateThreadProtection({ platform: route.platform, kind: 'retryable', midStream: true, modelDbId: route.modelDbId, error: streamErr });
-              if (action.banProvider) {
-                console.warn(`[Proxy] Mid-stream retryable error from ${route.platform} — banning provider for session (${action.reason})`);
-                banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
-                addProviderModelsToSkipModels(skipModels, route.platform);
-              }
-              if (action.skipModel) {
-                console.warn(`[Proxy] Mid-stream retryable error from ${route.platform} — skipping model ${route.modelId} (${action.reason})`);
-                skipModels.add(route.modelDbId);
-              }
-              if (action.clearStickyIfPinned && preferredModel) {
+            // Mid-stream retryable error handling for LongCat
+            if (route.platform === 'longcat' && isRetryableStreamError(streamErr)) {
+              console.warn(`[Proxy] Mid-stream retryable error from LongCat — excluding entire LongCat provider for session`);
+              banPlatformFromSession(normalizedMessages, routingMode, 'longcat', route.modelDbId);
+              addProviderModelsToSkipModels(skipModels, 'longcat');
+              // Clear sticky preference if pinned to LongCat
+              if (preferredModel) {
                 const db = getDb();
                 const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
-                if (prefRow?.platform === route.platform) {
+                if (prefRow?.platform === 'longcat') {
                   preferredModel = undefined;
                   preferredKeyId = undefined;
                 }
@@ -1681,9 +1552,25 @@ async function handleChatCompletion(
           }
           // Pre-stream error — bubble to outer retry/502 handler.
           throw streamErr;
+        } finally {
+          // Ensure the session is deregistered immediately on end/abort/fail
+          if (sessionKey) {
+            activeRequests.delete(sessionKey);
+          }
         }
       } else {
-        const result = await route.provider.chatCompletion(
+        let result;
+        try {
+          // Register the session as active
+          if (sessionKey) {
+            activeRequests.set(sessionKey, {
+              platform: route.platform,
+              modelId: route.modelId,
+              startTime: Date.now()
+            });
+          }
+
+          result = await route.provider.chatCompletion(
           route.apiKey, normalizedMessages, route.modelId,
           { temperature, max_tokens, top_p, tools, tool_choice, parallel_tool_calls },
         );
@@ -1712,69 +1599,74 @@ async function handleChatCompletion(
           Date.now() - start, ttfbMs, null,
         );
         return;
+      } finally {
+        // Ensure the session is deregistered immediately on end/abort/fail
+        if (sessionKey) {
+          activeRequests.delete(sessionKey);
+        }
       }
     } catch (err: any) {
       const latency = Date.now() - start;
       logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, null, err.message);
 
       // 5xx failure detection
-       const errStatus = getErrorStatus(err);
-       if (errStatus && isBanEligibleStatus(errStatus)) {
-         const action = evaluateThreadProtection({ platform: route.platform, kind: '5xx', midStream: false, modelDbId: route.modelDbId, error: err });
-         if (action.banProvider) {
-           console.warn(`[Proxy] 5xx from ${route.platform} — banning provider for session (${action.reason})`);
-           banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
-           addProviderModelsToSkipModels(skipModels, route.platform);
-         }
-         if (action.skipModel) {
-           console.warn(`[Proxy] 5xx from ${route.platform} — skipping model ${route.modelId} only (${action.reason})`);
-           skipModels.add(route.modelDbId);
-         }
-         if (action.clearStickyIfPinned && preferredModel) {
-           const db = getDb();
-           const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
-           if (prefRow?.platform === route.platform) {
-             preferredModel = undefined;
-             preferredKeyId = undefined;
-           }
-         }
-       }
+        const errStatus = getErrorStatus(err);
+        if (errStatus && isBanEligibleStatus(errStatus)) {
+          const action = evaluateThreadProtection({ platform: route.platform, kind: '5xx', midStream: false, modelDbId: route.modelDbId, error: err });
+          if (action.banProvider) {
+            console.warn(`[Proxy] 5xx from ${route.platform} — banning provider for session (${action.reason})`);
+            banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
+            addProviderModelsToSkipModels(skipModels, route.platform);
+          }
+          if (action.skipModel) {
+            console.warn(`[Proxy] 5xx from ${route.platform} — skipping model ${route.modelId} only (${action.reason})`);
+            skipModels.add(route.modelDbId);
+          }
+          if (action.clearStickyIfPinned && preferredModel) {
+            const db = getDb();
+            const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
+            if (prefRow?.platform === route.platform) {
+              preferredModel = undefined;
+              preferredKeyId = undefined;
+            }
+          }
+        }
 
-      if (isRetryableError(err)) {
-         // Register global transient cooldown for this failing model
-         transientModelCooldowns.set(route.modelDbId, Date.now() + TRANSIENT_COOLDOWN_MS);
-         console.log(`[TransientCooldown] registered global cooldown for modelDbId=${route.modelDbId} (${TRANSIENT_COOLDOWN_MS / 1000}s)`);
-         const action = evaluateThreadProtection({ platform: route.platform, kind: 'retryable', midStream: false, modelDbId: route.modelDbId, error: err });
-         if (action.banProvider) {
-           console.warn(`[Proxy] Retryable error from ${route.platform} — banning provider for session (${action.reason})`);
-           banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
-           addProviderModelsToSkipModels(skipModels, route.platform);
-         }
-         if (action.skipModel) {
-           console.warn(`[Proxy] Retryable error from ${route.platform} — skipping model ${route.modelId} (${action.reason})`);
-           skipModels.add(route.modelDbId);
-         }
-         if (action.clearStickyIfPinned && preferredModel) {
-           const db = getDb();
-           const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
-           if (prefRow?.platform === route.platform) {
-             preferredModel = undefined;
-             preferredKeyId = undefined;
-           }
-         }
-         if (!action.banProvider) {
-           // Key-level retry handling for non-provider-ban platforms
-           const skipId = `${route.platform}:${route.modelId}:${route.keyId}`;
-           skipKeys.add(skipId);
-           // Non-rate-limit, non-auth errors: skip the model so fallback moves to a different model
-           if (shouldSkipModelOnRetry(err)) {
-             skipModels.add(route.modelDbId);
-           }
-           // Rate-limit errors: cooldown this key but allow other keys for the same model
-           if (isRateLimitError(err)) {
-             setCooldown(route.platform, route.modelId, route.keyId, 120_000);
-           }
-         }
+       if (isRetryableError(err)) {
+          // Register global transient cooldown for this failing model
+          transientModelCooldowns.set(route.modelDbId, Date.now() + TRANSIENT_COOLDOWN_MS);
+          console.log(`[TransientCooldown] registered global cooldown for modelDbId=${route.modelDbId} (${TRANSIENT_COOLDOWN_MS / 1000}s)`);
+          const action = evaluateThreadProtection({ platform: route.platform, kind: 'retryable', midStream: false, modelDbId: route.modelDbId, error: err });
+          if (action.banProvider) {
+            console.warn(`[Proxy] Retryable error from ${route.platform} — banning provider for session (${action.reason})`);
+            banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
+            addProviderModelsToSkipModels(skipModels, route.platform);
+          }
+          if (action.skipModel) {
+            console.warn(`[Proxy] Retryable error from ${route.platform} — skipping model ${route.modelId} (${action.reason})`);
+            skipModels.add(route.modelDbId);
+          }
+          if (action.clearStickyIfPinned && preferredModel) {
+            const db = getDb();
+            const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
+            if (prefRow?.platform === route.platform) {
+              preferredModel = undefined;
+              preferredKeyId = undefined;
+            }
+          }
+          if (!action.banProvider) {
+            // Key-level retry handling for non-provider-ban platforms
+            const skipId = `${route.platform}:${route.modelId}:${route.keyId}`;
+            skipKeys.add(skipId);
+            // Non-rate-limit, non-auth errors: skip the model so fallback moves to a different model
+            if (shouldSkipModelOnRetry(err)) {
+              skipModels.add(route.modelDbId);
+            }
+            // Rate-limit errors: cooldown this key but allow other keys for the same model
+            if (isRateLimitError(err)) {
+              setCooldown(route.platform, route.modelId, route.keyId, 120_000);
+            }
+          }
         // Auth errors (401/403): clear the sticky key for this session
         // so the retry unpins the broken key and falls through to round-robin.
         if (isAuthError(err)) {
