@@ -15,8 +15,11 @@ export const proxyRouter: Router = Router();
 // This prevents model switching mid-conversation which causes hallucination
 const stickySessionMap = new Map<string, { modelDbId: number; keyId?: number; bannedPlatforms?: Set<string>; lastUsed: number }>();
 const STICKY_TTL_MS = 30 * 60 * 1000; // 30 min session TTL
-const LONGCAT_STICKY_COOLDOWN_MS = 3 * 60 * 1000; // 3 min — bypass sticky preference for LongCat if session was used within this window
 const responseSessionMap = new Map<string, { messages: ChatMessage[]; lastUsed: number }>();
+
+// Tracks which sessions are currently making requests or streaming
+// Key: sessionKey (hash) -> details
+const activeRequests = new Map<string, { platform: string; modelId: string; startTime: number }>();
 const responseItemMap = new Map<string, ChatMessage>();
 const RESPONSE_SESSION_TTL_MS = 30 * 60 * 1000;
 const MAX_RESPONSE_SESSIONS = 500;
@@ -1202,38 +1205,39 @@ async function handleChatCompletion(
     }
   }
 
-  // LongCat sticky cooldown: if the sticky model is on LongCat and was used
-  // within the last 3 minutes, exclude LongCat from the bandit router for all
-  // other sessions. The current sticky session keeps its pinned LongCat route.
-  // This prevents LongCat from seeing multiple sessions/keys from the same IP.
-  if (preferredModel) {
-    const db = getDb();
-    const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
-    if (prefRow?.platform === 'longcat') {
-      const cooldownSessionKey = getSessionKey(normalizedMessages, routingMode);
-      const cooldownEntry = cooldownSessionKey ? stickySessionMap.get(cooldownSessionKey) : undefined;
-      if (cooldownEntry && Date.now() - cooldownEntry.lastUsed < LONGCAT_STICKY_COOLDOWN_MS) {
-        const ageMs = Date.now() - cooldownEntry.lastUsed;
-        addProviderModelsToSkipModels(skipModels, 'longcat');
-        console.log(`[Sticky] LongCat cooldown active — excluding LongCat from bandit routing for other sessions | session=${cooldownSessionKey?.slice(0, 8)} | lastUsed=${ageMs}ms ago`);
-      }
+  // Pure Active-Request LongCat Safeguard: Exclude LongCat from bandit routing
+  // for this request ONLY if another session is actively using it right now.
+  let otherSessionUsingLongCat = false;
+
+  for (const [sKey, active] of activeRequests.entries()) {
+    if (sKey !== sessionKey && active.platform === 'longcat') {
+      otherSessionUsingLongCat = true;
+      break;
     }
   }
 
-  // Owl Alpha sticky cooldown: if the sticky model is on openrouter/owl-alpha and was used
-  // within the last 3 minutes, exclude owl-alpha from the bandit router for all
-  // other sessions. The current sticky session keeps its pinned owl-alpha route.
-  if (preferredModel) {
+  if (otherSessionUsingLongCat) {
+    addProviderModelsToSkipModels(skipModels, 'longcat');
+    console.log(`[Sticky] LongCat protection active — excluding LongCat from bandit routing because another session is actively using it`);
+  }
+
+  // Pure Active-Request Owl Alpha Safeguard: Exclude openrouter/owl-alpha
+  // from bandit routing for this request ONLY if another session is actively using it right now.
+  let otherSessionUsingOwl = false;
+
+  for (const [sKey, active] of activeRequests.entries()) {
+    if (sKey !== sessionKey && active.platform === 'openrouter' && active.modelId === 'owl-alpha') {
+      otherSessionUsingOwl = true;
+      break;
+    }
+  }
+
+  if (otherSessionUsingOwl) {
     const db = getDb();
-    const prefRow = db.prepare('SELECT platform, model_id FROM models WHERE id = ?').get(preferredModel) as { platform: string; model_id: string } | undefined;
-    if (prefRow?.platform === 'openrouter' && prefRow?.model_id === 'owl-alpha') {
-      const cooldownSessionKey = getSessionKey(normalizedMessages, routingMode);
-      const cooldownEntry = cooldownSessionKey ? stickySessionMap.get(cooldownSessionKey) : undefined;
-      if (cooldownEntry && Date.now() - cooldownEntry.lastUsed < LONGCAT_STICKY_COOLDOWN_MS) {
-        const ageMs = Date.now() - cooldownEntry.lastUsed;
-        skipModels.add(preferredModel);
-        console.log(`[Sticky] Owl Alpha cooldown active — excluding openrouter/owl-alpha from bandit routing for other sessions | session=${cooldownSessionKey?.slice(0, 8)} | lastUsed=${ageMs}ms ago`);
-      }
+    const owlRow = db.prepare("SELECT id FROM models WHERE platform = 'openrouter' AND model_id = 'owl-alpha'").get() as { id: number } | undefined;
+    if (owlRow) {
+      skipModels.add(owlRow.id);
+      console.log(`[Sticky] Owl Alpha protection active — excluding openrouter/owl-alpha from bandit routing because another session is actively using it`);
     }
   }
 
@@ -1286,6 +1290,15 @@ async function handleChatCompletion(
         let streamStarted = false;
         let ttfbMs: number | null = null;
         try {
+          // Register the session as active
+          if (sessionKey) {
+            activeRequests.set(sessionKey, {
+              platform: route.platform,
+              modelId: route.modelId,
+              startTime: Date.now()
+            });
+          }
+
           const gen = route.provider.streamChatCompletion(
             route.apiKey, normalizedMessages, route.modelId,
             { temperature, max_tokens, top_p, tools, tool_choice, parallel_tool_calls },
@@ -1535,9 +1548,25 @@ async function handleChatCompletion(
           }
           // Pre-stream error — bubble to outer retry/502 handler.
           throw streamErr;
+        } finally {
+          // Ensure the session is deregistered immediately on end/abort/fail
+          if (sessionKey) {
+            activeRequests.delete(sessionKey);
+          }
         }
       } else {
-        const result = await route.provider.chatCompletion(
+        let result;
+        try {
+          // Register the session as active
+          if (sessionKey) {
+            activeRequests.set(sessionKey, {
+              platform: route.platform,
+              modelId: route.modelId,
+              startTime: Date.now()
+            });
+          }
+
+          result = await route.provider.chatCompletion(
           route.apiKey, normalizedMessages, route.modelId,
           { temperature, max_tokens, top_p, tools, tool_choice, parallel_tool_calls },
         );
@@ -1566,6 +1595,11 @@ async function handleChatCompletion(
           Date.now() - start, ttfbMs, null,
         );
         return;
+      } finally {
+        // Ensure the session is deregistered immediately on end/abort/fail
+        if (sessionKey) {
+          activeRequests.delete(sessionKey);
+        }
       }
     } catch (err: any) {
       const latency = Date.now() - start;
