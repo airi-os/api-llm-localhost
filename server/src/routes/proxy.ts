@@ -18,9 +18,11 @@ const STICKY_TTL_MS = 30 * 60 * 1000; // 30 min session TTL
 const responseSessionMap = new Map<string, { messages: ChatMessage[]; lastUsed: number }>();
 
 // Tracks which sessions are currently making requests or streaming
-// Key: sessionKey (hash) -> details
-const activeRequests = new Map<string, { platform: string; modelId: string; startTime: number }>();
+// Uses Set to allow concurrent requests from the same session without overwriting
+const activeRequests = new Set<{ sessionKey: string; platform: string; modelId: string; startTime: number }>();
 const responseItemMap = new Map<string, ChatMessage>();
+// Cached owl-alpha model ID: undefined = not yet looked up, null = not found, number = found
+let cachedOwlAlphaModelId: number | null | undefined = undefined;
 const RESPONSE_SESSION_TTL_MS = 30 * 60 * 1000;
 const MAX_RESPONSE_SESSIONS = 500;
 const MAX_MODEL_RESPONSE_LOG_CHARS = 6000;
@@ -1205,12 +1207,21 @@ async function handleChatCompletion(
     }
   }
 
+  // Clean up stale active requests (older than 10 minutes)
+  const ACTIVE_REQUEST_TTL_MS = 10 * 60 * 1000;
+  const activeNow = Date.now();
+  for (const active of activeRequests) {
+    if (activeNow - active.startTime > ACTIVE_REQUEST_TTL_MS) {
+      activeRequests.delete(active);
+    }
+  }
+
   // Pure Active-Request LongCat Safeguard: Exclude LongCat from bandit routing
   // for this request ONLY if another session is actively using it right now.
   let otherSessionUsingLongCat = false;
 
-  for (const [sKey, active] of activeRequests.entries()) {
-    if (sKey !== sessionKey && active.platform === 'longcat') {
+  for (const active of activeRequests) {
+    if (active.sessionKey !== sessionKey && active.platform === 'longcat') {
       otherSessionUsingLongCat = true;
       break;
     }
@@ -1225,18 +1236,21 @@ async function handleChatCompletion(
   // from bandit routing for this request ONLY if another session is actively using it right now.
   let otherSessionUsingOwl = false;
 
-  for (const [sKey, active] of activeRequests.entries()) {
-    if (sKey !== sessionKey && active.platform === 'openrouter' && active.modelId === 'owl-alpha') {
+  for (const active of activeRequests) {
+    if (active.sessionKey !== sessionKey && active.platform === 'openrouter' && active.modelId === 'owl-alpha') {
       otherSessionUsingOwl = true;
       break;
     }
   }
 
   if (otherSessionUsingOwl) {
-    const db = getDb();
-    const owlRow = db.prepare("SELECT id FROM models WHERE platform = 'openrouter' AND model_id = 'owl-alpha'").get() as { id: number } | undefined;
-    if (owlRow) {
-      skipModels.add(owlRow.id);
+    if (cachedOwlAlphaModelId === undefined) {
+      const db = getDb();
+      const owlRow = db.prepare("SELECT id FROM models WHERE platform = 'openrouter' AND model_id = 'owl-alpha'").get() as { id: number } | undefined;
+      cachedOwlAlphaModelId = owlRow ? owlRow.id : null;
+    }
+    if (cachedOwlAlphaModelId !== null) {
+      skipModels.add(cachedOwlAlphaModelId);
       console.log(`[Sticky] Owl Alpha protection active — excluding openrouter/owl-alpha from bandit routing because another session is actively using it`);
     }
   }
@@ -1292,7 +1306,8 @@ async function handleChatCompletion(
         try {
           // Register the session as active
           if (sessionKey) {
-            activeRequests.set(sessionKey, {
+            activeRequests.add({
+              sessionKey,
               platform: route.platform,
               modelId: route.modelId,
               startTime: Date.now()
@@ -1551,7 +1566,12 @@ async function handleChatCompletion(
         } finally {
           // Ensure the session is deregistered immediately on end/abort/fail
           if (sessionKey) {
-            activeRequests.delete(sessionKey);
+            for (const active of activeRequests) {
+              if (active.sessionKey === sessionKey && active.platform === route.platform && active.modelId === route.modelId) {
+                activeRequests.delete(active);
+                break;
+              }
+            }
           }
         }
       } else {
@@ -1559,7 +1579,8 @@ async function handleChatCompletion(
         try {
           // Register the session as active
           if (sessionKey) {
-            activeRequests.set(sessionKey, {
+            activeRequests.add({
+              sessionKey,
               platform: route.platform,
               modelId: route.modelId,
               startTime: Date.now()
@@ -1567,40 +1588,45 @@ async function handleChatCompletion(
           }
 
           result = await route.provider.chatCompletion(
-          route.apiKey, normalizedMessages, route.modelId,
-          { temperature, max_tokens, top_p, tools, tool_choice, parallel_tool_calls },
-        );
-        const ttfbMs = Date.now() - start;
+           route.apiKey, normalizedMessages, route.modelId,
+           { temperature, max_tokens, top_p, tools, tool_choice, parallel_tool_calls },
+         );
+         const ttfbMs = Date.now() - start;
 
-        if (isEmptyAssistantResponse(result)) {
-          throw Object.assign(new Error(`Provider returned an empty assistant response from ${route.displayName}`), { status: 502 });
-        }
+         if (isEmptyAssistantResponse(result)) {
+           throw Object.assign(new Error(`Provider returned an empty assistant response from ${route.displayName}`), { status: 502 });
+         }
 
-        const totalTokens = result.usage?.total_tokens ?? 0;
-        recordTokens(route.platform, route.modelId, route.keyId, totalTokens);
-        recordSuccess(route.modelDbId);
-        setStickyModel(normalizedMessages, route.modelDbId, routingMode, route.keyId);
-        resetAllConsecutiveFailures(normalizedMessages, routingMode);
+         const totalTokens = result.usage?.total_tokens ?? 0;
+         recordTokens(route.platform, route.modelId, route.keyId, totalTokens);
+         recordSuccess(route.modelDbId);
+         setStickyModel(normalizedMessages, route.modelDbId, routingMode, route.keyId);
+         resetAllConsecutiveFailures(normalizedMessages, routingMode);
 
-        res.setHeader('X-Routed-Via', `${route.platform}/${route.modelId}`);
-        if (attempt > 0) res.setHeader('X-Fallback-Attempts', String(attempt));
-        const responseBody = formatResponse ? formatResponse(result, normalizedMessages) : result;
-        res.json(responseBody);
-        logFinalModelResponse(route, responseBody, ttfbMs);
+         res.setHeader('X-Routed-Via', `${route.platform}/${route.modelId}`);
+         if (attempt > 0) res.setHeader('X-Fallback-Attempts', String(attempt));
+         const responseBody = formatResponse ? formatResponse(result, normalizedMessages) : result;
+         res.json(responseBody);
+         logFinalModelResponse(route, responseBody, ttfbMs);
 
-        logRequest(
-          route.platform, route.modelId, 'success',
-          result.usage?.prompt_tokens ?? 0,
-          result.usage?.completion_tokens ?? 0,
-          Date.now() - start, ttfbMs, null,
-        );
-        return;
-      } finally {
-        // Ensure the session is deregistered immediately on end/abort/fail
-        if (sessionKey) {
-          activeRequests.delete(sessionKey);
-        }
-      }
+         logRequest(
+           route.platform, route.modelId, 'success',
+           result.usage?.prompt_tokens ?? 0,
+           result.usage?.completion_tokens ?? 0,
+           Date.now() - start, ttfbMs, null,
+         );
+         return;
+       } finally {
+         // Ensure the session is deregistered immediately on end/abort/fail
+         if (sessionKey) {
+           for (const active of activeRequests) {
+             if (active.sessionKey === sessionKey && active.platform === route.platform && active.modelId === route.modelId) {
+               activeRequests.delete(active);
+               break;
+             }
+           }
+         }
+       }
     } catch (err: any) {
       const latency = Date.now() - start;
       logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, null, err.message);
