@@ -10,8 +10,14 @@ export const fallbackRouter: Router = Router();
 // Models excluded from balanced auto-routing are in the Smart pool.
 // All other models are in the Balanced pool by default.
 function getModelPool(platform: string, modelId: string): ModelPool {
+  // Fast pool: models explicitly marked as fast via naming convention or known fast identifiers.
+  if (modelId.endsWith('-fast') || modelId === 'openai-fast') {
+    return ModelPool.Fast;
+  }
+  // Smart pool: models that should be routed for highest intelligence.
   if (platform === 'longcat') return ModelPool.Smart;
   if (platform === 'openrouter' && modelId === 'owl-alpha') return ModelPool.Smart;
+  // Default to Balanced pool.
   return ModelPool.Balanced;
 }
 
