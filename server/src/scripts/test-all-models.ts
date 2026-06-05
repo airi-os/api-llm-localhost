@@ -5,6 +5,7 @@
 import { initDb, getDb } from '../db/index.js';
 import { decrypt } from '../lib/crypto.js';
 import { getProvider } from '../providers/index.js';
+import type { Platform } from '@freellmapi/shared/types.js';
 
 initDb();
 const db = getDb();
@@ -40,7 +41,7 @@ for (const row of models) {
   const keyRow = keyStmt.get(row.platform) as Key | undefined;
   if (!keyRow) { results.push({ row, ok: false, ms: 0, error: 'no key' }); continue; }
   const apiKey = decrypt(keyRow.encrypted_key, keyRow.iv, keyRow.auth_tag);
-  const provider = getProvider(row.platform);
+  const provider = getProvider(row.platform as Platform);
   if (!provider) { results.push({ row, ok: false, ms: 0, error: 'no provider' }); continue; }
 
   const start = Date.now();

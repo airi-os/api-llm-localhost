@@ -3,6 +3,7 @@ import type { Request, Response } from 'express';
 import { getDb } from '../db/index.js';
 import { checkKeyHealth, checkAllKeys } from '../services/health.js';
 import { hasProvider } from '../providers/index.js';
+import type { Platform } from '@freellmapi/shared/types.js';
 
 export const healthRouter: Router = Router();
 
@@ -54,7 +55,7 @@ healthRouter.get('/', (_req: Request, res: Response) => {
   res.json({
     platforms: platforms.map(p => ({
       platform: p.platform,
-      hasProvider: hasProvider(p.platform),
+      hasProvider: hasProvider(p.platform as Platform),
       totalKeys: p.total_keys,
       healthyKeys: p.healthy_keys,
       rateLimitedKeys: p.rate_limited_keys,

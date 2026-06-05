@@ -1,10 +1,73 @@
-    import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
-    import type { Express } from 'express';
-    import { createApp } from '../../app.js';
-    import { initDb, getDb, getUnifiedApiKey } from '../../db/index.js';
-    import { streamKeepaliveConfig } from '../../routes/proxy.js';
-    import http from 'http';
-    import type { AddressInfo } from 'net';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
+import type { Express } from 'express';
+import type { AddressInfo } from 'net';
+import { createApp } from '../../app.js';
+import { initDb, getDb, getUnifiedApiKey } from '../../db/index.js';
+import { streamKeepaliveConfig } from '../../routes/proxy.js';
+import http from 'http';
+
+function httpRequest(
+  app: Express,
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve) => {
+    const server = app.listen(0);
+    const addr = server.address() as AddressInfo;
+    const port = addr.port;
+
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port,
+      path,
+      method,
+      headers: {
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+        ...(path.startsWith('/v1/') ? { Authorization: `Bearer ${getUnifiedApiKey()}` } : {}),
+      },
+    }, (res) => {
+      let data = '';
+      res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+      res.on('end', () => {
+        server.close();
+        resolve({ status: res.statusCode ?? 0, body: data });
+      });
+    });
+
+    req.on('error', () => {
+      server.close();
+      resolve({ status: 0, body: '' });
+    });
+
+    if (body) {
+      req.write(JSON.stringify(body));
+    }
+    req.end();
+  });
+}
+
+describe('Stream heartbeat and stall handling', () => {
+  let app: Express;
+  let origFetch: typeof global.fetch;
+
+  beforeAll(() => {
+    process.env.ENCRYPTION_KEY = '0'.repeat(64);
+    initDb(':memory:');
+    app = createApp();
+  });
+
+  beforeEach(() => {
+    origFetch = global.fetch;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    global.fetch = origFetch;
+  });
+
+  it('client disconnect cleans up keepalive timers', async () => {
+    const encoder = new TextEncoder();
 
     vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
@@ -79,7 +142,6 @@
   });
 
   it('normal streaming works correctly with heartbeat enabled', async () => {
-    const origFetch = global.fetch;
     const encoder = new TextEncoder();
 
     // Mock provider that yields a chunk quickly (no idle period)
@@ -107,6 +169,14 @@
         }),
       } as unknown as Response;
     });
+
+    // Add a key so the proxy can route to a provider
+    const addKey = await httpRequest(app, 'POST', '/api/keys', {
+      platform: 'groq',
+      key: 'gsk_heartbeat_test',
+      label: 'heartbeat-test',
+    });
+    expect(addKey.status).toBe(201);
 
     const { status, body } = await httpRequest(app, 'POST', '/v1/chat/completions', {
       messages: [{ role: 'user', content: 'Quick response test' }],

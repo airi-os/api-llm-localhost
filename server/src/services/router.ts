@@ -4,6 +4,7 @@ import { decrypt } from '../lib/crypto.js';
 import { canMakeRequest, canUseTokens, isOnCooldown } from './ratelimit.js';
 import type { BaseProvider } from '../providers/base.js';
 import type { Database } from 'better-sqlite3';
+import type { Platform } from '@freellmapi/shared/types.js';
 
 interface ChainRow {
   model_db_id: number;
@@ -596,7 +597,7 @@ export function routeRequest(
   for (const entry of sorted) {
     if (skipModels?.has(entry.model_db_id) && entry.model_db_id !== preferredModelDbId) continue;
 
-    const provider = getProvider(entry.platform);
+    const provider = getProvider(entry.platform as Platform);
     if (!provider) continue;
 
     const keys = db.prepare(
@@ -674,7 +675,7 @@ export function routeRequest(
     roundRobinIndex.set(rrKey, idx);
   }
 
-  const err = new Error('All models exhausted. Add more API keys or wait for rate limits to reset.');
-  (err as { status: number }).status = 429;
+  const err = new Error('All models exhausted. Add more API keys or wait for rate limits to reset.') as Error & { status: number };
+  err.status = 429;
   throw err;
 }

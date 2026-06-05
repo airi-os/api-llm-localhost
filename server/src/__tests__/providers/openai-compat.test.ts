@@ -46,6 +46,7 @@ describe('OpenAICompatProvider', () => {
     expect(capturedUrl).toBe('https://api.test.com/v1/chat/completions');
     expect(capturedHeaders['Authorization']).toBe('Bearer my-key');
     expect(capturedHeaders['X-Custom']).toBe('test');
+    expect(capturedBody).toBeDefined();
     expect(capturedBody!.messages[0].role).toBe('user');
   });
 

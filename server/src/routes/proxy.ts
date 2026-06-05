@@ -521,16 +521,23 @@ function isBanEligibleStatus(status: number): boolean {
 }
 
 function getErrorMessage(err: unknown): string {
+  if (typeof err === 'string') {
+    return err;
+  }
   if (typeof err === 'object' && err !== null) {
-    if ('message' in err && typeof (err as any).message === 'string') {
-      return (err as { message: string }).message;
+    const obj = err as Record<string, unknown>;
+    if (typeof obj.message === 'string') {
+      return obj.message;
     }
-    const errorProp = (err as any).error;
-    if (typeof errorProp === 'object' && errorProp !== null && 'message' in errorProp && typeof (errorProp as any).message === 'string') {
-      return (errorProp as { message: string }).message;
+    const errorProp = obj.error;
+    if (typeof errorProp === 'object' && errorProp !== null) {
+      const errorObj = errorProp as Record<string, unknown>;
+      if (typeof errorObj.message === 'string') {
+        return errorObj.message;
+      }
     }
   }
-  return 'Unknown provider error';
+  return String(err);
 }
 
 function isRateLimitError(err: unknown): boolean {
@@ -1543,14 +1550,16 @@ async function handleChatCompletion(
             // Generalized truncation detection for any provider (not just LongCat)
             // Aggregate all possible error text sources for comprehensive detection
             const truncationTexts: string[] = [];
+            const errObj = streamErr as Record<string, unknown>;
             if (streamErr instanceof Error) {
               truncationTexts.push(streamErr.message);
             }
-            if (streamErr?.response?.data) {
-              truncationTexts.push(typeof streamErr.response.data === 'string' ? streamErr.response.data : JSON.stringify(streamErr.response.data));
+            const response = errObj?.response as Record<string, unknown> | undefined;
+            if (response?.data) {
+              truncationTexts.push(typeof response.data === 'string' ? response.data : JSON.stringify(response.data));
             }
-            if (streamErr?.body) {
-              truncationTexts.push(typeof streamErr.body === 'string' ? streamErr.body : JSON.stringify(streamErr.body));
+            if (errObj?.body) {
+              truncationTexts.push(typeof errObj.body === 'string' ? errObj.body : JSON.stringify(errObj.body));
             }
             truncationTexts.push(String(streamErr));
             const combinedTruncationText = truncationTexts.join(' ');
@@ -1581,7 +1590,7 @@ async function handleChatCompletion(
                 }
                 res.end();
               } catch { /* socket gone */ }
-              logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, totalOutputTokens, Date.now() - start, ttfbMs, streamErr.message);
+              logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, totalOutputTokens, Date.now() - start, ttfbMs, streamErr instanceof Error ? streamErr.message : String(streamErr));
               return;
             }
           
@@ -1621,7 +1630,7 @@ async function handleChatCompletion(
                 }
                 res.end();
               } catch { /* socket gone */ }
-              logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, totalOutputTokens, Date.now() - start, ttfbMs, streamErr.message);
+              logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, totalOutputTokens, Date.now() - start, ttfbMs, streamErr instanceof Error ? streamErr.message : String(streamErr));
               return;
             }
 
@@ -1629,7 +1638,7 @@ async function handleChatCompletion(
             // the client hanging or letting Express's default handler take over.
             // Full upstream message goes to the log; the client sees a generic
             // message so we don't leak provider internals into a partial stream.
-            console.error(`[Proxy] Mid-stream error from ${route.displayName}:`, streamErr.message);
+            console.error(`[Proxy] Mid-stream error from ${route.displayName}:`, streamErr instanceof Error ? streamErr.message : String(streamErr));
             const payload = { error: { message: `Provider error (${route.displayName}): stream interrupted`, type: 'stream_error' } };
             try {
               if (responseStreamContext) {
@@ -1647,7 +1656,7 @@ async function handleChatCompletion(
               }
               res.end();
             } catch { /* socket gone */ }
-            logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, totalOutputTokens, Date.now() - start, ttfbMs, streamErr.message);
+            logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, totalOutputTokens, Date.now() - start, ttfbMs, streamErr instanceof Error ? streamErr.message : String(streamErr));
             return;
           }
           // Pre-stream error — bubble to outer retry/502 handler.
@@ -1723,10 +1732,10 @@ async function handleChatCompletion(
       logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, null, errMessage);
 
       // 5xx failure detection
-         const errStatus = getErrorStatus(err as any);
+         const errStatus = getErrorStatus(err);
          const isTransientCooldownEligible = (errStatus !== undefined && errStatus >= 500 && errStatus < 600) || errStatus === undefined;
          if (errStatus && isBanEligibleStatus(errStatus)) {
-           const action = evaluateThreadProtection({ platform: route.platform, kind: '5xx', midStream: false, modelDbId: route.modelDbId, error: err as any });
+           const action = evaluateThreadProtection({ platform: route.platform, kind: '5xx', midStream: false, modelDbId: route.modelDbId, error: err });
            if (action.banProvider) {
              console.warn(`[Proxy] 5xx from ${route.platform} — banning provider for session (${action.reason})`);
              banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);

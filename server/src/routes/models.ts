@@ -2,6 +2,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { getDb } from '../db/index.js';
 import { hasProvider } from '../providers/index.js';
+import type { Platform } from '@freellmapi/shared/types.js';
 
 export const modelsRouter: Router = Router();
 
@@ -59,7 +60,7 @@ modelsRouter.get('/', (_req: Request, res: Response) => {
     enabled: m.enabled === 1,
     priority: m.priority,
     fallbackEnabled: m.fallback_enabled === 1,
-    hasProvider: hasProvider(m.platform),
+    hasProvider: hasProvider(m.platform as Platform),
     keyCount: keyCountMap.get(m.platform) ?? 0,
   }));
 

@@ -57,6 +57,7 @@ describe('CloudflareProvider', () => {
     expect(capturedUrl).toContain('abc123');
     expect(capturedUrl).toContain('/ai/v1/chat/completions');
     expect(capturedHeaders['Authorization']).toBe('Bearer my-token-here');
+    expect(capturedBody).toBeDefined();
     expect(capturedBody!.model).toBe('@cf/meta/llama-3.1-70b-instruct');
     expect(result.choices[0].message.content).toBe('Hello from CF!');
   });

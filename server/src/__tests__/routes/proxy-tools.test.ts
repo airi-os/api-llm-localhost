@@ -70,7 +70,8 @@ describe('Proxy tool-calling support', () => {
     vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.includes('api.groq.com/openai/v1/chat/completions')) {
-        providerBody = JSON.parse(init!.body as string);
+        if (!init?.body) throw new Error('missing body');
+        providerBody = JSON.parse(init.body as string);
         return {
           ok: true,
           json: () => Promise.resolve({
@@ -262,7 +263,8 @@ describe('Proxy tool-calling support', () => {
       }
       if (!urlStr.includes('/chat/completions')) return origFetch(url, init);
 
-      const body = JSON.parse(init!.body as string) as { model: string; [key: string]: unknown };
+      if (!init?.body) throw new Error('missing body');
+      const body = JSON.parse(init.body as string) as { model: string; [key: string]: unknown };
       seenModels.push(body.model);
 
       if (firstAttempt) {
@@ -321,7 +323,8 @@ describe('Proxy tool-calling support', () => {
     vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.includes('api.groq.com/openai/v1/chat/completions')) {
-        providerBody = JSON.parse(init!.body as string) as unknown;
+        if (!init?.body) throw new Error('missing body');
+        providerBody = JSON.parse(init.body as string) as unknown;
         return {
           ok: true,
           json: () => Promise.resolve({
@@ -414,6 +417,7 @@ describe('Proxy tool-calling support', () => {
     });
 
     expect(status).toBe(200);
+    expect(providerBody).toBeDefined();
     expect(providerBody!.messages).toEqual([
       { role: 'system', content: 'Answer briefly.' },
       { role: 'user', content: 'ping' },
@@ -604,8 +608,10 @@ describe('Proxy tool-calling support', () => {
     server.close();
 
     expect(res.status).toBe(200);
-    expect((providerBody as any).stream).toBe(true);
-    expect((providerBody as any).tools[0]).toEqual({
+    const providerBodyObj = providerBody as Record<string, unknown>;
+    expect(providerBodyObj.stream).toBe(true);
+    const tools = providerBodyObj.tools as Array<Record<string, unknown>>;
+    expect(tools[0]).toEqual({
       type: 'function',
       function: {
         name: 'transcribe',
@@ -850,8 +856,9 @@ describe('LongCat sticky session cooldown', () => {
     // Set up sticky session on LongCat with recent lastUsed (within 3 min cooldown)
     const messages = makeMessages('cooldown active test');
     const key = getSessionKey(messages, 'balanced');
+    if (!longcatRow) throw new Error('missing longcat row');
     (stickySessionMap as Map<string, { modelDbId: number; lastUsed: number }>).set(key, {
-      modelDbId: longcatRow!.id,
+      modelDbId: longcatRow.id,
       lastUsed: Date.now() - 1000, // 1 second ago — within cooldown
     });
 
@@ -895,7 +902,7 @@ describe('LongCat sticky session cooldown', () => {
           }],
           usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
         }),
-      } as any;
+      } as Response;
     });
 
     const { status } = await request(app, 'POST', '/v1/chat/completions', {
@@ -919,8 +926,9 @@ describe('LongCat sticky session cooldown', () => {
     const stickyKey = getSessionKey(stickyMessages, 'balanced');
     const longcatRow = db.prepare('SELECT id FROM models WHERE platform = ? AND enabled = 1').get('longcat') as { id: number } | undefined;
     expect(longcatRow).toBeDefined();
+    if (!longcatRow) throw new Error('missing longcat row');
     (stickySessionMap as Map<string, { modelDbId: number; lastUsed: number }>).set(stickyKey, {
-      modelDbId: longcatRow!.id,
+      modelDbId: longcatRow.id,
       lastUsed: Date.now() - 1000, // within cooldown
     });
 
@@ -1001,8 +1009,9 @@ describe('LongCat sticky session cooldown', () => {
     // Set up sticky session on LongCat with old lastUsed (beyond 3 min cooldown)
     const messages = makeMessages('cooldown expired test');
     const key = getSessionKey(messages, 'balanced');
+    if (!longcatRow) throw new Error('missing longcat row');
     (stickySessionMap as Map<string, unknown>).set(key, {
-      modelDbId: longcatRow!.id,
+      modelDbId: longcatRow.id,
       lastUsed: Date.now() - 4 * 60 * 1000, // 4 minutes ago — cooldown expired
     });
 
@@ -1070,8 +1079,9 @@ describe('LongCat sticky session cooldown', () => {
     // Set up sticky session on Groq with recent lastUsed (would be within cooldown if LongCat)
     const messages = makeMessages('non longcat cooldown test');
     const key = getSessionKey(messages, 'balanced');
+    if (!groqRow) throw new Error('missing groq row');
     (stickySessionMap as Map<string, unknown>).set(key, {
-      modelDbId: groqRow!.id,
+      modelDbId: groqRow.id,
       lastUsed: Date.now() - 1000, // 1 second ago
     });
 
@@ -1134,8 +1144,9 @@ describe('LongCat sticky session cooldown', () => {
     // Set up sticky session on LongCat with recent lastUsed AND LongCat banned
     const messages = makeMessages('ban precedence test');
     const key = getSessionKey(messages, 'balanced');
+    if (!longcatRow) throw new Error('missing longcat row');
     (stickySessionMap as Map<string, unknown>).set(key, {
-      modelDbId: longcatRow!.id,
+      modelDbId: longcatRow.id,
       lastUsed: Date.now() - 1000, // within cooldown window
       bannedPlatforms: new Set(['longcat']),
     });
