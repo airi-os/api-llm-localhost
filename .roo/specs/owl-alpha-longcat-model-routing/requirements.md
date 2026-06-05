@@ -119,8 +119,8 @@ The smart auto preference logic must validate that keys are not on cooldown befo
 
 ## Dependencies
 
-- Existing LongCat smart auto preference logic in [`server/src/services/router.ts`](../server/src/services/router.ts)
-- Existing LongCat sticky cooldown logic in [`server/src/routes/proxy.ts`](../server/src/routes/proxy.ts)
-- Existing provider-level ban logic in [`server/src/routes/proxy.ts`](../server/src/routes/proxy.ts)
-- Owl Alpha model seeded in [`server/src/db/index.ts`](../server/src/db/index.ts) via `migrateModelsV15`
-- LongCat model seeded in [`server/src/db/index.ts`](../server/src/db/index.ts) via `migrateModelsV16`
+- Existing LongCat smart auto preference logic in [`server/src/services/router.ts`](../../../server/src/services/router.ts)
+- Existing LongCat sticky cooldown logic in [`server/src/routes/proxy.ts`](../../../server/src/routes/proxy.ts)
+- Existing provider-level ban logic in [`server/src/routes/proxy.ts`](../../../server/src/routes/proxy.ts)
+- Owl Alpha model seeded in [`server/src/db/index.ts`](../../../server/src/db/index.ts) via `migrateModelsV15`
+- LongCat model seeded in [`server/src/db/index.ts`](../../../server/src/db/index.ts) via `migrateModelsV16`

@@ -2,13 +2,13 @@
 
 ## Architecture Overview
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
 │                     Client Request                          │
 │              model: "freellmapi/auto" | "freellmapi/auto-smart"  │
 └─────────────┬───────────────────────────────┬───────────────┘
-              │                               │
-              ▼                               ▼
+               │                               │
+               ▼                               ▼
 ┌─────────────────────────┐     ┌─────────────────────────┐
 │   Balanced Router       │     │   Smart Router          │
 │   (auto)                │     │   (auto-smart)          │
@@ -21,8 +21,8 @@
 │                         │     │  - Model-level banning  │
 │                         │     │    on errors            │
 └─────────────┬───────────┘     └───────────┬─────────────┘
-              │                               │
-              ▼                               ▼
+               │                               │
+               ▼                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │              routeRequest() in router.ts                    │
 │                                                             │
@@ -33,8 +33,8 @@
 │  5. Apply sticky session pin                                │
 │  6. Iterate chain, find first model with valid key          │
 └─────────────────────────────────────────────────────────────┘
-              │
-              ▼
+               │
+               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │              handleChatCompletion() in proxy.ts             │
 │                                                             │
@@ -49,59 +49,59 @@
 
 ### Smart Preference Flow
 
-```
+```text
 routeRequest()
-  │
-  ├─ Build chain (all enabled models from fallback_config)
-  ├─ Score all entries via Thompson sampling
-  │
-  ├─ [BALANCED MODE]
-  │   ├─ Filter out entries where platform == 'longcat'
-  │   ├─ Filter out entries where platform == 'openrouter' AND model_id == 'owl-alpha'
-  │   └─ Continue with remaining chain
-  │
-  ├─ [SMART MODE]
-  │   ├─ Check LongCat preference
-  │   │   ├─ Query longcat keys (enabled, not invalid)
-  │   │   ├─ Validate: !isOnCooldown && canMakeRequest && canUseTokens
-  │   │   └─ If valid keys exist → move longcat entries to front
-  │   │
-  │   ├─ Check Owl Alpha preference
-  │   │   ├─ Query openrouter keys (enabled, not invalid)
-  │   │   ├─ Validate: !isOnCooldown && canMakeRequest && canUseTokens
-  │   │   └─ If valid keys exist → move openrouter/owl-alpha entry to front
-  │   │
-  │   └─ Continue with reordered chain
-  │
-  ├─ Apply sticky session pin (preferredModelDbId)
-  └─ Iterate chain for first valid key
+   │
+   ├─ Build chain (all enabled models from fallback_config)
+   ├─ Score all entries via Thompson sampling
+   │
+   ├─ [BALANCED MODE]
+   │   ├─ Filter out entries where platform == 'longcat'
+   │   ├─ Filter out entries where platform == 'openrouter' AND model_id == 'owl-alpha'
+   │   └─ Continue with remaining chain
+   │
+   ├─ [SMART MODE]
+   │   ├─ Check LongCat preference
+   │   │   ├─ Query longcat keys (enabled, not invalid)
+   │   │   ├─ Validate: !isOnCooldown && canMakeRequest && canUseTokens
+   │   │   └─ If valid keys exist → move longcat entries to front
+   │   │
+   │   ├─ Check Owl Alpha preference
+   │   │   ├─ Query openrouter keys (enabled, not invalid)
+   │   │   ├─ Validate: !isOnCooldown && canMakeRequest && canUseTokens
+   │   │   └─ If valid keys exist → move openrouter/owl-alpha entry to front
+   │   │
+   │   └─ Continue with reordered chain
+   │
+   ├─ Apply sticky session pin (preferredModelDbId)
+   └─ Iterate chain for first valid key
 ```
 
 ### Sticky Cooldown Flow
 
-```
+```text
 handleChatCompletion()
-  │
-  ├─ [Existing] Check if sticky model is LongCat
-  │   └─ If within cooldown → add longcat platform models to skipModels
-  │
-  ├─ [NEW] Check if sticky model is Owl Alpha (openrouter/owl-alpha)
-  │   └─ If within cooldown → add openrouter/owl-alpha model to skipModels
-  │
-  └─ Proceed with routing (skipModels applied)
+   │
+   ├─ [Existing] Check if sticky model is LongCat
+   │   └─ If within cooldown → add longcat platform models to skipModels
+   │
+   ├─ [NEW] Check if sticky model is Owl Alpha (openrouter/owl-alpha)
+   │   └─ If within cooldown → add openrouter/owl-alpha model to skipModels
+   │
+   └─ Proceed with routing (skipModels applied)
 ```
 
 ### Error Handling Flow (Model-Level)
 
-```
+```text
 On 5xx / retryable / truncation error from route:
-  │
-  ├─ [Existing LongCat] banPlatformFromSession('longcat')
-  │   → [CHANGED TO] skipModels.add(modelDbId) for longcat/LongCat-2.0-Preview
-  │
-  ├─ [NEW Owl Alpha] skipModels.add(modelDbId) for openrouter/owl-alpha
-  │
-  └─ Retry loop continues with updated skipModels
+   │
+   ├─ [Existing LongCat] banPlatformFromSession('longcat')
+   │   → [CHANGED TO] skipModels.add(modelDbId) for longcat/LongCat-2.0-Preview
+   │
+   ├─ [NEW Owl Alpha] skipModels.add(modelDbId) for openrouter/owl-alpha
+   │
+   └─ Retry loop continues with updated skipModels
 ```
 
 ## File Changes

@@ -113,6 +113,7 @@ export class OpenAICompatProvider extends BaseProvider {
 
     const decoder = new TextDecoder();
     let buffer = '';
+    let hasYielded = false;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -134,10 +135,11 @@ export class OpenAICompatProvider extends BaseProvider {
           // Skip malformed chunks
           continue;
         }
-        if (this.isWrappedError(parsed)) {
+        if (!hasYielded && this.isWrappedError(parsed)) {
           this.throwWrappedError(parsed);
         }
         yield parsed;
+        hasYielded = true;
       }
     }
   }

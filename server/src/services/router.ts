@@ -329,6 +329,7 @@ export function getAnalyticsScores(): Array<{
 }> {
   if (!statsCache) return [];
   const db = getDb();
+  refreshStatsCache(db);
   const intelligenceRows = db.prepare(`
     SELECT platform, model_id, intelligence_rank
     FROM models

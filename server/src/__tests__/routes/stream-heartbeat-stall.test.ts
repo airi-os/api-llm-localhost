@@ -9,22 +9,26 @@ async function request(app: Express, method: string, path: string, body?: any) {
   const addr = server.address() as any;
   const url = `http://127.0.0.1:${addr.port}${path}`;
 
-  const res = await fetch(url, {
-    method,
-    headers: {
-      ...(body ? { 'Content-Type': 'application/json' } : {}),
-      ...(path.startsWith('/v1/') ? { Authorization: `Bearer ${getUnifiedApiKey()}` } : {}),
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  try {
+    const res = await fetch(url, {
+      method,
+      headers: {
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+        ...(path.startsWith('/v1/') ? { Authorization: `Bearer ${getUnifiedApiKey()}` } : {}),
+        ...(path.startsWith('/api/') ? { Authorization: `Bearer ${process.env.ADMIN_DASHBOARD_KEY || ''}` } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
 
-  const data = await res.text();
-  server.close();
+    const data = await res.text();
 
-  let json: any = null;
-  try { json = JSON.parse(data); } catch {}
+    let json: any = null;
+    try { json = JSON.parse(data); } catch {}
 
-  return { status: res.status, body: json, headers: res.headers, raw: data };
+    return { status: res.status, body: json, headers: res.headers, raw: data };
+  } finally {
+    server.close();
+  }
 }
 
 describe('SSE stream heartbeat and stall protection', () => {
@@ -34,6 +38,7 @@ describe('SSE stream heartbeat and stall protection', () => {
 
   beforeAll(() => {
     process.env.ENCRYPTION_KEY = '0'.repeat(64);
+    process.env.ADMIN_DASHBOARD_KEY = 'test-admin-key';
     initDb(':memory:');
     app = createApp();
   });
