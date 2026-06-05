@@ -1,0 +1,14 @@
+[Unit]
+Description=FreeLLMAPI Dev Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/vi/freellmapi
+# Using pnpm directly as 'nr' is a shortcut that might not be in the systemd environment PATH
+ExecStart=/usr/bin/env pnpm run dev
+Restart=on-failure
+# Environment=PATH=/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target
