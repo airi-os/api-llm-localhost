@@ -1,5 +1,6 @@
 <div align="center">
 
+
 # FreeLLMAPI
 
 **One OpenAI-compatible endpoint. Eleven free LLM providers. ~1B+ tokens per month.**
@@ -9,7 +10,7 @@ Aggregate the free tiers from Google, Groq, Cerebras, SambaNova, NVIDIA, Mistral
 [![CI](https://github.com/tashfeenahmed/freellmapi/actions/workflows/ci.yml/badge.svg)](https://github.com/tashfeenahmed/freellmapi/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
-
+<a href="https://app.deepsource.com/gh/vi70x4/freellmapi/" target="_blank"><img alt="DeepSource" title="DeepSource" src="https://app.deepsource.com/gh/vi70x4/freellmapi.svg/?label=code+coverage&show_trend=true&token=GGGrSfiwPCP9PlhdcRds_pd0"/></a><a href="https://app.deepsource.com/gh/vi70x4/freellmapi/" target="_blank"><img alt="DeepSource" title="DeepSource" src="https://app.deepsource.com/gh/vi70x4/freellmapi.svg/?label=active+issues&show_trend=true&token=GGGrSfiwPCP9PlhdcRds_pd0"/></a><a href="https://app.deepsource.com/gh/vi70x4/freellmapi/" target="_blank"><img alt="DeepSource" title="DeepSource" src="https://app.deepsource.com/gh/vi70x4/freellmapi.svg/?label=resolved+issues&show_trend=true&token=GGGrSfiwPCP9PlhdcRds_pd0"/></a>
 ![Live routing stats — score-ranked model table](repo-assets/fallback-chain.png)
 
 </div>
