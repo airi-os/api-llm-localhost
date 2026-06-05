@@ -29,8 +29,8 @@ const MAX_MODEL_RESPONSE_LOG_CHARS = 6000;
 
 // Stream keepalive / stall detection configuration
 export const streamKeepaliveConfig = {
-  KEEPALIVE_INTERVAL_MS: 100,
-  MAX_STREAM_STALL_MS: 500,
+  KEEPALIVE_INTERVAL_MS: 15000,
+  MAX_STREAM_STALL_MS: 60000,
 };
 
 // Transient model cooldowns: modelDbId → expiry timestamp

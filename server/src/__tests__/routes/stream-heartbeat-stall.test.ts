@@ -38,7 +38,8 @@ describe('SSE stream heartbeat and stall protection', () => {
 
   beforeAll(() => {
     process.env.ENCRYPTION_KEY = '0'.repeat(64);
-    process.env.ADMIN_DASHBOARD_KEY = 'test-admin-key';
+    process.env.ADMIN_DASHBOARD_KEY = 'test-admin-key-that-is-long-enough';
+    process.env.NODE_ENV = 'test';
     initDb(':memory:');
     app = createApp();
   });
