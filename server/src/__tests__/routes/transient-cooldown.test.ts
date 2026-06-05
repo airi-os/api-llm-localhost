@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import type { Express } from 'express';
 import { createApp } from '../../app.js';
-import { initDb, getDb } from '../../db/index.js';
+import { initDb, getDb, getUnifiedApiKey } from '../../db/index.js';
 import {
   transientModelCooldowns,
   TRANSIENT_COOLDOWN_MS,
@@ -17,11 +17,40 @@ function clearStickyMap() {
   (stickySessionMap as Map<any, any>).clear();
 }
 
+async function request(app: Express, method: string, path: string, body?: any) {
+  const server = app.listen(0);
+  const addr = server.address() as any;
+  const url = `http://127.0.0.1:${addr.port}${path}`;
+
+  try {
+    const res = await fetch(url, {
+      method,
+      headers: {
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+        ...(path.startsWith('/v1/') ? { Authorization: `Bearer ${getUnifiedApiKey()}` } : {}),
+        ...(path.startsWith('/api/') ? { Authorization: `Bearer ${process.env.ADMIN_DASHBOARD_KEY || ''}` } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+
+    const data = await res.text();
+
+    let json: any = null;
+    try { json = JSON.parse(data); } catch {}
+
+    return { status: res.status, body: json, headers: res.headers, raw: data };
+  } finally {
+    server.close();
+  }
+}
+
 describe('Transient model cooldown functionality', () => {
   let app: Express;
 
   beforeAll(() => {
     process.env.ENCRYPTION_KEY = '0'.repeat(64);
+    process.env.ADMIN_DASHBOARD_KEY = 'test-admin-key-that-is-long-enough';
+    process.env.NODE_ENV = 'test';
     initDb(':memory:');
     app = createApp();
   });
@@ -37,6 +66,7 @@ describe('Transient model cooldown functionality', () => {
   afterEach(() => {
     clearCooldownMap();
     clearStickyMap();
+    vi.restoreAllMocks();
   });
 
   // ---------- Test Suite 1: Cooldown Map Basics ----------
@@ -312,52 +342,146 @@ describe('Transient model cooldown functionality', () => {
     });
   });
 
-  // ---------- Test Suite 5: Cooldown Registration Error Classification ----------
-  describe('Cooldown registration: only 5xx and connection failures trigger cooldown', () => {
-    it('5xx status codes (500-504) are eligible for cooldown registration', () => {
-      // Simulate the condition: (errStatus >= 500 && errStatus < 600)
-      const eligibleStatuses = [500, 502, 503, 504];
-      for (const status of eligibleStatuses) {
-        const condition = status !== undefined && status >= 500 && status < 600;
-        expect(condition).toBe(true);
+  // ---------- Test Suite 5: Cooldown Registration via Actual Proxy Errors ----------
+  // Note: isRetryableError() returns true for ALL 5xx status codes (500, 502, 503, 504)
+   // and common connection errors (ECONNREFUSED, ECONNRESET, etc.). Transient cooldown is
+   // only set when !isRetryableError(err), which means the error type itself must NOT be
+   // in the retryable list. We test with a non-retryable status (501) to verify the
+   // cooldown registration path works, and verify that retryable errors (5xx, 429) do NOT
+   // set cooldowns.
+  describe('Cooldown registration via proxy error handling', () => {
+    it('non-retryable error (501) registers transient cooldown for the model', async () => {
+      const origFetch = global.fetch;
+
+      // Add a Groq key so routing can succeed
+      const addKey = await request(app, 'POST', '/api/keys', {
+        platform: 'groq',
+        key: 'gsk_cooldown_test_501',
+        label: 'cooldown-test-501',
+      });
+      expect(addKey.status).toBe(201);
+
+      // Get all Groq model DB IDs
+      const db = getDb();
+      const groqModels = db.prepare("SELECT id FROM models WHERE platform = 'groq' AND enabled = 1").all() as { id: number }[];
+      expect(groqModels.length).toBeGreaterThan(0);
+      const groqModelIds = new Set(groqModels.map(m => m.id));
+
+      // Mock provider to return 501 Not Implemented (NOT in isRetryableError's list)
+      vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+        const urlStr = typeof url === 'string' ? url : url.toString();
+        if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
+          return origFetch(url, init);
+        }
+        return {
+          ok: false,
+          status: 501,
+          statusText: 'Not Implemented',
+          text: () => Promise.resolve('Not Implemented'),
+        } as any;
+      });
+
+      // Make a request — all retries will fail with 502 (proxy maps 501 to routing error)
+      const { status } = await request(app, 'POST', '/v1/chat/completions', {
+        messages: [{ role: 'user', content: 'Test 501 cooldown' }],
+      });
+
+      // Should get an error response back
+      expect(status).toBeGreaterThanOrEqual(500);
+
+      // The transient cooldown should be registered for at least one Groq model
+      // because 501 is NOT in the isRetryableError list, so !isRetryableError returns true
+      const cooldownFound = [...transientModelCooldowns.keys()].some(id => groqModelIds.has(id));
+      expect(cooldownFound).toBe(true);
+
+      // Verify the cooldown entry has a valid expiry
+      for (const [id, expiry] of transientModelCooldowns) {
+        if (groqModelIds.has(id)) {
+          expect(expiry).toBeGreaterThan(Date.now());
+          expect(expiry).toBeLessThanOrEqual(Date.now() + TRANSIENT_COOLDOWN_MS);
+        }
       }
     });
 
-    it('429 rate limit is NOT eligible for cooldown registration', () => {
-      const status = 429;
-      const condition = status !== undefined && status >= 500 && status < 600;
-      expect(condition).toBe(false);
+    it('5xx error (502) does NOT register transient cooldown (always retryable)', async () => {
+      const origFetch = global.fetch;
+
+      // Add a Groq key
+      const addKey = await request(app, 'POST', '/api/keys', {
+        platform: 'groq',
+        key: 'gsk_cooldown_test_502',
+        label: 'cooldown-test-502',
+      });
+      expect(addKey.status).toBe(201);
+
+      const db = getDb();
+      const groqModels = db.prepare("SELECT id FROM models WHERE platform = 'groq' AND enabled = 1").all() as { id: number }[];
+      const groqModelIds = new Set(groqModels.map(m => m.id));
+
+      // Mock provider to return 502 Bad Gateway (in isRetryableError's list)
+      vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+        const urlStr = typeof url === 'string' ? url : url.toString();
+        if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
+          return origFetch(url, init);
+        }
+        return {
+          ok: false,
+          status: 502,
+          statusText: 'Bad Gateway',
+          text: () => Promise.resolve('Bad Gateway'),
+        } as any;
+      });
+
+      const { status } = await request(app, 'POST', '/v1/chat/completions', {
+        messages: [{ role: 'user', content: 'Test 502 no cooldown' }],
+      });
+
+      expect(status).toBe(502);
+
+      // 502 IS in the isRetryableError list, so transient cooldown should NOT be set
+      const anyGroqCooldown = [...transientModelCooldowns.keys()].some(id => groqModelIds.has(id));
+      expect(anyGroqCooldown).toBe(false);
     });
 
-    it('401 auth error is NOT eligible for cooldown registration', () => {
-      const status = 401;
-      const condition = status !== undefined && status >= 500 && status < 600;
-      expect(condition).toBe(false);
-    });
+    it('429 rate limit does NOT register transient cooldown', async () => {
+      const origFetch = global.fetch;
 
-    it('403 forbidden is NOT eligible for cooldown registration', () => {
-      const status = 403;
-      const condition = status !== undefined && status >= 500 && status < 600;
-      expect(condition).toBe(false);
-    });
+      // Add a Groq key
+      const addKey = await request(app, 'POST', '/api/keys', {
+        platform: 'groq',
+        key: 'gsk_cooldown_test_429',
+        label: 'cooldown-test-429',
+      });
+      expect(addKey.status).toBe(201);
 
-    it('400 bad request is NOT eligible for cooldown registration', () => {
-      const status = 400;
-      const condition = status !== undefined && status >= 500 && status < 600;
-      expect(condition).toBe(false);
-    });
+      const db = getDb();
+      const groqModels = db.prepare("SELECT id FROM models WHERE platform = 'groq' AND enabled = 1").all() as { id: number }[];
+      const groqModelIds = new Set(groqModels.map(m => m.id));
 
-    it('undefined status (connection failure) IS eligible for cooldown', () => {
-      const status: number | undefined = undefined;
-      // The condition: (errStatus !== undefined && errStatus >= 500 && errStatus < 600) || errStatus === undefined
-      const condition = (status !== undefined && status >= 500 && status < 600) || status === undefined;
-      expect(condition).toBe(true);
-    });
+      // Mock provider to return 429
+      vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+        const urlStr = typeof url === 'string' ? url : url.toString();
+        if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
+          return origFetch(url, init);
+        }
+        return {
+          ok: false,
+          status: 429,
+          statusText: 'Too Many Requests',
+          text: () => Promise.resolve('Rate limited'),
+        } as any;
+      });
 
-    it('404 not found is NOT eligible for cooldown registration', () => {
-      const status = 404;
-      const condition = (status !== undefined && status >= 500 && status < 600) || status === undefined;
-      expect(condition).toBe(false);
+      const { status } = await request(app, 'POST', '/v1/chat/completions', {
+        messages: [{ role: 'user', content: 'Test 429 no cooldown' }],
+      });
+
+      // Should get 429 back
+      expect(status).toBe(429);
+
+      // 429 should NOT register a transient cooldown on any Groq model
+      const anyGroqCooldown = [...transientModelCooldowns.keys()].some(id => groqModelIds.has(id));
+      expect(anyGroqCooldown).toBe(false);
     });
   });
 

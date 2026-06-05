@@ -1381,7 +1381,7 @@ async function handleChatCompletion(
             }
           }, streamKeepaliveConfig.KEEPALIVE_INTERVAL_MS);
 
-          req.on('close', cleanup);
+          res.on('close', cleanup);
 
           try {
             for await (const chunk of gen) {
@@ -1411,7 +1411,7 @@ async function handleChatCompletion(
               }
             }
           } finally {
-            req.off('close', cleanup);
+            res.off('close', cleanup);
             cleanup();
           }
 

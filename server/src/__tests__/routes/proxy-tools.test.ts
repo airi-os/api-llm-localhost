@@ -528,7 +528,10 @@ describe('Proxy tool-calling support', () => {
 
     vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
-      if (urlStr.includes('api.groq.com/openai/v1/chat/completions')) {
+      if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
+        return origFetch(url, init);
+      }
+      if (urlStr.includes('/chat/completions')) {
         providerBody = JSON.parse((init as any).body);
         const chunks = [
           {
@@ -547,13 +550,12 @@ describe('Proxy tool-calling support', () => {
           },
         ];
         const encoder = new TextEncoder();
+        const allData = chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).concat('data: [DONE]\n\n').join('');
         return {
           ok: true,
           body: new ReadableStream({
             start(controller) {
-              for (const value of chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).concat('data: [DONE]\n\n')) {
-                controller.enqueue(encoder.encode(value));
-              }
+              controller.enqueue(encoder.encode(allData));
               controller.close();
             },
           }),
@@ -616,7 +618,10 @@ describe('Proxy tool-calling support', () => {
 
     vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
-      if (urlStr.includes('api.groq.com/openai/v1/chat/completions')) {
+      if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
+        return origFetch(url, init);
+      }
+      if (urlStr.includes('/chat/completions')) {
         providerBodies.push(JSON.parse((init as any).body));
 
         if (providerBodies.length === 1) {
@@ -659,13 +664,12 @@ describe('Proxy tool-calling support', () => {
             },
           ];
           const encoder = new TextEncoder();
+          const allData = chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).concat('data: [DONE]\n\n').join('');
           return {
             ok: true,
             body: new ReadableStream({
               start(controller) {
-                for (const value of chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).concat('data: [DONE]\n\n')) {
-                  controller.enqueue(encoder.encode(value));
-                }
+                controller.enqueue(encoder.encode(allData));
                 controller.close();
               },
             }),
