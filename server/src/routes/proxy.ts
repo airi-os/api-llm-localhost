@@ -7,7 +7,7 @@ import { routeRequest, recordSuccess, type RouteResult, type RoutingMode } from 
 import { recordRequest, recordTokens, setCooldown } from '../services/ratelimit.js';
 import { getDb, getUnifiedApiKey } from '../db/index.js';
 import { extractBearerToken, timingSafeStringEqual } from '../lib/secrets.js';
-import { getProtectionLevel } from '../services/threadProtection.js';
+import { getProtectionLevel, evaluateThreadProtection } from '../services/threadProtection.js';
 
 export const proxyRouter: Router = Router();
 
@@ -50,7 +50,7 @@ function getSessionKey(messages: ChatMessage[], routingMode: RoutingMode): strin
 
 function getStickyModel(messages: ChatMessage[], routingMode: RoutingMode): number | undefined {
   const key = getSessionKey(messages, routingMode);
-  if (key === undefined) return undefined;
+  if (!key) return undefined;
 
   const entry = stickySessionMap.get(key);
   if (!entry) {
@@ -1253,16 +1253,18 @@ async function handleChatCompletion(
 
   // Inject transient model cooldowns into skipModels
   {
+    const cooldownIds = new Set<number>();
     const now = Date.now();
     for (const [id, exp] of transientModelCooldowns) {
       if (now > exp) {
         transientModelCooldowns.delete(id);
       } else {
         skipModels.add(id);
+        cooldownIds.add(id);
       }
     }
-    if (skipModels.size > 0) {
-      console.log(`[Proxy] transient cooldowns active for model IDs: [${Array.from(skipModels).join(",")}]`);
+    if (cooldownIds.size > 0) {
+      console.log(`[Proxy] transient cooldowns active for model IDs: [${Array.from(cooldownIds).join(",")}]`);
     }
   }
 
@@ -1270,7 +1272,6 @@ async function handleChatCompletion(
   // entirely so the fallback chain can move to a different provider/model.
   const skipKeys = new Set<string>();
   let lastError: any = null;
-  let streamAborted = false;
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     let route: RouteResult;
@@ -1333,6 +1334,12 @@ async function handleChatCompletion(
 
           let lastChunkTime = Date.now();
           let stalled = false;
+
+          const cleanup = () => {
+            clearInterval(keepaliveTimer);
+            try { gen.return(undefined); } catch { /* already closed */ }
+          };
+
           const keepaliveTimer = setInterval(() => {
             if (stalled) {
               clearInterval(keepaliveTimer);
@@ -1341,7 +1348,7 @@ async function handleChatCompletion(
             const elapsed = Date.now() - lastChunkTime;
             if (elapsed >= streamKeepaliveConfig.MAX_STREAM_STALL_MS) {
               stalled = true;
-              clearInterval(keepaliveTimer);
+              cleanup();
               if (streamStarted) {
                 const payload = { error: { message: 'Stream stalled: no data received within timeout', type: 'stream_timeout' } };
                 try {
@@ -1360,13 +1367,21 @@ async function handleChatCompletion(
                   }
                   res.end();
                 } catch { /* socket gone */ }
+              } else {
+                // Pre-stream stall: throw so the outer catch can retry fallback models
+                throw Object.assign(
+                  new Error(`Stream timed out: no data received from provider ${route.displayName}`),
+                  { status: 504 }
+                );
               }
               return;
             }
-            if (streamStarted && elapsed >= streamKeepaliveConfig.KEEPALIVE_INTERVAL_MS) {
+            if (!stalled && elapsed >= streamKeepaliveConfig.KEEPALIVE_INTERVAL_MS) {
               try { res.write(': keep-alive\n\n'); } catch { /* socket gone */ }
             }
           }, streamKeepaliveConfig.KEEPALIVE_INTERVAL_MS);
+
+          req.on('close', cleanup);
 
           try {
             for await (const chunk of gen) {
@@ -1374,6 +1389,9 @@ async function handleChatCompletion(
               lastChunkTime = Date.now();
               if (!streamStarted) {
                 ttfbMs = Date.now() - start;
+                res.setHeader('Content-Type', 'text/event-stream');
+                res.setHeader('Cache-Control', 'no-cache');
+                res.setHeader('Connection', 'keep-alive');
                 res.setHeader('X-Routed-Via', `${route.platform}/${route.modelId}`);
                 if (attempt > 0) res.setHeader('X-Fallback-Attempts', String(attempt));
                 if (responseStreamContext) {
@@ -1393,10 +1411,8 @@ async function handleChatCompletion(
               }
             }
           } finally {
-            clearInterval(keepaliveTimer);
-            if (stalled) {
-              try { gen.return(undefined); } catch { /* already closed */ }
-            }
+            req.off('close', cleanup);
+            cleanup();
           }
 
           // Check for truncated response content after stream completes.
@@ -1416,19 +1432,6 @@ async function handleChatCompletion(
                   skipModels.add(route.modelDbId);
                 }
             }
-          }
-
-          if (stalled && !streamStarted) {
-            // Pre-stream stall: no headers sent yet, return 504 so the retry loop can try another model
-            streamAborted = true;
-            res.status(504).json({
-              error: {
-                message: 'Stream timed out: no data received from provider',
-                type: 'stream_timeout',
-              },
-            });
-            logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, totalOutputTokens, Date.now() - start, ttfbMs, 'Pre-stream stall timeout');
-            return;
           }
 
           if (!streamStarted) {
@@ -1689,7 +1692,6 @@ async function handleChatCompletion(
        }
      }
    } catch (err: any) {
-      if (streamAborted) return;
       const latency = Date.now() - start;
       logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, null, err.message);
 
@@ -1715,18 +1717,24 @@ async function handleChatCompletion(
                preferredKeyId = undefined;
              }
            }
-           // Register transient cooldown for any 5xx ban-eligible error
-           transientModelCooldowns.set(route.modelDbId, Date.now() + TRANSIENT_COOLDOWN_MS);
+           // Only register transient cooldown when all keys are exhausted (non-retryable).
+           // A single key failing should not penalise the entire model — other keys may work.
+           if (!isRetryableError(err)) {
+             transientModelCooldowns.set(route.modelDbId, Date.now() + TRANSIENT_COOLDOWN_MS);
+           }
          } else if (isTransientCooldownEligible) {
            // Connection failures (undefined status) and non-ban-eligible 5xx (e.g. 501, 505+)
-           // still trigger transient cooldown even if not session-banned
-           transientModelCooldowns.set(route.modelDbId, Date.now() + TRANSIENT_COOLDOWN_MS);
+           // still trigger transient cooldown even if not session-banned — but only when
+           // all keys are exhausted (non-retryable) so a single key failure doesn't penalise the model.
+           if (!isRetryableError(err)) {
+             transientModelCooldowns.set(route.modelDbId, Date.now() + TRANSIENT_COOLDOWN_MS);
+           }
          }
 
         if (isRetryableError(err)) {
-           // Register global transient cooldown for this failing model
-           transientModelCooldowns.set(route.modelDbId, Date.now() + TRANSIENT_COOLDOWN_MS);
-           console.log(`[TransientCooldown] registered global cooldown for modelDbId=${route.modelDbId} (${TRANSIENT_COOLDOWN_MS / 1000}s)`);
+           // Do NOT register transient cooldown here — the retry loop will try other keys
+           // for this model first. Cooldowns are only set above for non-retryable errors
+           // when all keys are exhausted.
            const action = evaluateThreadProtection({ platform: route.platform, kind: 'retryable', midStream: false, modelDbId: route.modelDbId, error: err });
            if (action.banProvider) {
              console.warn(`[Proxy] Retryable error from ${route.platform} — banning provider for session (${action.reason})`);

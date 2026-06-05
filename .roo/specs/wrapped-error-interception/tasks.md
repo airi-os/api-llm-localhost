@@ -36,26 +36,29 @@
   - Insert: `if (this.isWrappedError(data)) { this.throwWrappedError(data); }`
 
 - [x] 7. Add wrapped-error check in `CohereProvider.streamChatCompletion()` in `server/src/providers/cohere.ts`
-  - Inside the `try` block at line 110, after `JSON.parse(data)` succeeds:
-  - Insert: `if (this.isWrappedError(parsed)) { this.throwWrappedError(parsed); }`
-  - Note: assign the result of `JSON.parse` to a variable first, then check, then yield
+   - Inside the `try` block at line 110, after `JSON.parse(data)` succeeds:
+   - Insert: `if (this.isWrappedError(parsed)) { this.throwWrappedError(parsed); }`
+   - Note: assign the result of `JSON.parse` to a variable first, then check, then yield
+   - Note: Only check wrapped errors on the first parsed payload before any chunk has been yielded. After the first yield, skip the check to avoid mid-stream aborts.
 
 - [x] 8. Add wrapped-error check in `CloudflareProvider.chatCompletion()` in `server/src/providers/cloudflare.ts`
   - After line 62 (`const data = await res.json() as ChatCompletionResponse;`), before line 63 (`data._routed_via = ...`):
   - Insert: `if (this.isWrappedError(data)) { this.throwWrappedError(data); }`
 
 - [x] 9. Add wrapped-error check in `CloudflareProvider.streamChatCompletion()` in `server/src/providers/cloudflare.ts`
-  - Inside the `try` block at line 119, after `JSON.parse(data)` succeeds:
-  - Insert: `if (this.isWrappedError(parsed)) { this.throwWrappedError(parsed); }`
-  - Note: assign the result of `JSON.parse` to a variable first, then check, then yield
+   - Inside the `try` block at line 119, after `JSON.parse(data)` succeeds:
+   - Insert: `if (this.isWrappedError(parsed)) { this.throwWrappedError(parsed); }`
+   - Note: assign the result of `JSON.parse` to a variable first, then check, then yield
+   - Note: Only check wrapped errors on the first parsed payload before any chunk has been yielded. After the first yield, skip the check to avoid mid-stream aborts.
 
 - [x] 10. Add wrapped-error check in `GoogleProvider.chatCompletion()` in `server/src/providers/google.ts`
   - After line 246 (`const data = await res.json() as GeminiResponse;`), before line 247 (`const candidate = data.candidates?.[0];`):
   - Insert: `if (this.isWrappedError(data)) { this.throwWrappedError(data); }`
 
 - [x] 11. Add wrapped-error check in `GoogleProvider.streamChatCompletion()` in `server/src/providers/google.ts`
-  - After line 354 (`chunk = JSON.parse(raw) as GeminiResponse;`), before line 358 (`const candidate = chunk.candidates?.[0];`):
-  - Insert: `if (this.isWrappedError(chunk)) { this.throwWrappedError(chunk); }`
+   - After line 354 (`chunk = JSON.parse(raw) as GeminiResponse;`), before line 358 (`const candidate = chunk.candidates?.[0];`):
+   - Insert: `if (this.isWrappedError(chunk)) { this.throwWrappedError(chunk); }`
+   - Note: Only check wrapped errors on the first parsed payload before any chunk has been yielded. After the first yield, skip the check to avoid mid-stream aborts.
 
 - [x] 12. TypeScript compilation check
   - Run `npx tsc --noEmit` in the `server/` directory

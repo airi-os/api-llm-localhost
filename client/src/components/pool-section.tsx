@@ -13,13 +13,25 @@ export function PoolSection({
 }) {
   const [isExpanded, setIsExpanded] = useState(true);
 
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      setIsExpanded(!isExpanded);
+    }
+  };
+
   return (
     <section>
       <div
+        role="button"
+        aria-expanded={isExpanded}
+        aria-label={`${title} pool section, ${isExpanded ? 'expanded' : 'collapsed'}`}
+        tabIndex={0}
         className="flex items-center gap-2 mb-2 cursor-pointer select-none"
         onClick={() => setIsExpanded(!isExpanded)}
+        onKeyDown={handleKeyDown}
       >
-        <span className="text-xs text-muted-foreground">{isExpanded ? '▼' : '▶'}</span>
+        <span className="text-xs text-muted-foreground" aria-hidden="true">{isExpanded ? '▼' : '▶'}</span>
         <PoolBadge pool={pool} />
         <h2 className="text-sm font-medium text-muted-foreground">{title}</h2>
       </div>
