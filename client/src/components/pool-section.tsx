@@ -7,7 +7,7 @@ export function PoolSection({
   title,
   children,
 }: {
-  pool?: PoolType
+  pool: PoolType
   title: string
   children: ReactNode
 }) {
