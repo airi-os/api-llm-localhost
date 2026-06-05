@@ -22,7 +22,7 @@ async function request(app: Express, method: string, path: string, body?: any) {
   server.close();
 
   let json: any = null;
-  try { json = JSON.parse(data); } catch {}
+  try { json = JSON.parse(data); } catch { /* intentionally empty */ }
 
   return { status: res.status, body: json, headers: res.headers, raw: data };
 }
