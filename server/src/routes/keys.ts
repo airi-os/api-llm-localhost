@@ -24,7 +24,20 @@ const addKeySchema = z.object({
 // List all keys (masked)
 keysRouter.get('/', (_req: Request, res: Response) => {
   const db = getDb();
-  const rows = db.prepare('SELECT * FROM api_keys ORDER BY created_at DESC').all() as any[];
+  const stmt = db.prepare<{
+    id: number;
+    platform: string;
+    label: string;
+    encrypted_key: string;
+    iv: string;
+    auth_tag: string;
+    status: string;
+    enabled: number;
+    created_at: string;
+    last_checked_at: string | null;
+  }>('SELECT * FROM api_keys ORDER BY created_at DESC');
+
+  const rows = stmt.all();
 
   const keys = rows.map(row => {
     let maskedKey = '****';

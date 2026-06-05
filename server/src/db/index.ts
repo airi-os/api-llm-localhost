@@ -1085,7 +1085,7 @@ function migrateModelsV16(db: Database.Database) {
 }
 
 function migrateRequestsV12(db: Database.Database) {
-  const hasColumn = (db.prepare('PRAGMA table_info(requests)').all() as any[]).some(c => c.name === 'ttfb_ms');
+  const hasColumn = (db.prepare('PRAGMA table_info(requests)').all() as Array<{ name: string }> ).some(c => c.name === 'ttfb_ms');
   if (!hasColumn) {
     db.prepare('ALTER TABLE requests ADD COLUMN ttfb_ms INTEGER').run();
   }

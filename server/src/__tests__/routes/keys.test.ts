@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import type { Express } from 'express';
+import type { AddressInfo } from 'net';
 import { createApp } from '../../app.js';
 import { initDb, getDb } from '../../db/index.js';
-
-async function request(app: Express, method: string, path: string, body?: any) {
+async function request(app: Express, method: string, path: string, body?: unknown) {
   const server = app.listen(0);
-  const addr = server.address() as any;
+  const addr = server.address() as AddressInfo;
   const url = `http://127.0.0.1:${addr.port}${path}`;
 
   const res = await fetch(url, {
@@ -14,7 +14,7 @@ async function request(app: Express, method: string, path: string, body?: any) {
     body: body ? JSON.stringify(body) : undefined,
   });
 
-  const data = await res.json().catch(() => null);
+  const data: unknown = await res.json().catch(() => null);
   server.close();
   return { status: res.status, body: data };
 }

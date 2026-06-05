@@ -13,7 +13,24 @@ modelsRouter.get('/', (_req: Request, res: Response) => {
     FROM models m
     LEFT JOIN fallback_config fc ON fc.model_db_id = m.id
     ORDER BY COALESCE(fc.priority, m.intelligence_rank) ASC
-  `).all() as any[];
+  `).all() as {
+    id: number;
+    platform: string;
+    model_id: string;
+    display_name: string;
+    intelligence_rank: number;
+    speed_rank: number;
+    size_label: string;
+    rpm_limit: number;
+    rpd_limit: number;
+    tpm_limit: number;
+    tpd_limit: number;
+    monthly_token_budget: number;
+    context_window: number;
+    enabled: number;
+    priority: number | null;
+    fallback_enabled: number | null;
+  }[];
 
   // Count keys per platform
   const keyCounts = db.prepare(`

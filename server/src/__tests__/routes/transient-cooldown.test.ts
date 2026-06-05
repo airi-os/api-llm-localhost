@@ -10,16 +10,16 @@ import {
 } from '../../routes/proxy.js';
 
 function clearCooldownMap() {
-  (transientModelCooldowns as Map<any, any>).clear();
+  (transientModelCooldowns as Map<unknown, unknown>).clear();
 }
 
-function clearStickyMap() {
-  (stickySessionMap as Map<any, any>).clear();
+function clearStickyMap(): void {
+  (stickySessionMap as Map<unknown, unknown>).clear();
 }
 
-async function request(app: Express, method: string, path: string, body?: any) {
+async function request(app: Express, method: string, path: string, body?: unknown): Promise<{ status: number; body: unknown; headers: Headers; raw: string }> {
   const server = app.listen(0);
-  const addr = server.address() as any;
+  const addr = server.address() as AddressInfo;
   const url = `http://127.0.0.1:${addr.port}${path}`;
 
   try {
@@ -30,12 +30,12 @@ async function request(app: Express, method: string, path: string, body?: any) {
         ...(path.startsWith('/v1/') ? { Authorization: `Bearer ${getUnifiedApiKey()}` } : {}),
         ...(path.startsWith('/api/') ? { Authorization: `Bearer ${process.env.ADMIN_DASHBOARD_KEY || ''}` } : {}),
       },
-      body: body ? JSON.stringify(body) : undefined,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
     });
 
     const data = await res.text();
 
-    let json: any = null;
+    let json: unknown = null;
     try { json = JSON.parse(data); } catch { /* intentionally empty */ }
 
     return { status: res.status, body: json, headers: res.headers, raw: data };
@@ -373,12 +373,10 @@ describe('Transient model cooldown functionality', () => {
         if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
           return origFetch(url, init);
         }
-        return {
-          ok: false,
+        return new Response('Not Implemented', {
           status: 501,
           statusText: 'Not Implemented',
-          text: () => Promise.resolve('Not Implemented'),
-        } as any;
+        });
       });
 
       // Make a request — all retries will fail with 502 (proxy maps 501 to routing error)
@@ -429,7 +427,7 @@ describe('Transient model cooldown functionality', () => {
           status: 502,
           statusText: 'Bad Gateway',
           text: () => Promise.resolve('Bad Gateway'),
-        } as any;
+        } as Response;
       });
 
       const { status } = await request(app, 'POST', '/v1/chat/completions', {
@@ -459,7 +457,7 @@ describe('Transient model cooldown functionality', () => {
       const groqModelIds = new Set(groqModels.map(m => m.id));
 
       // Mock provider to return 429
-      vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+      vi.spyOn(global, 'fetch').mockImplementation(async (url: string | URL, init?: RequestInit): Promise<Response> => {
         const urlStr = typeof url === 'string' ? url : url.toString();
         if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
           return origFetch(url, init);
@@ -469,7 +467,7 @@ describe('Transient model cooldown functionality', () => {
           status: 429,
           statusText: 'Too Many Requests',
           text: () => Promise.resolve('Rate limited'),
-        } as any;
+        } as Response;
       });
 
       const { status } = await request(app, 'POST', '/v1/chat/completions', {
@@ -490,7 +488,7 @@ describe('Transient model cooldown functionality', () => {
     it('global cooldown and session-banned models both appear in skipModels', () => {
       const db = getDb();
       // Get a real model ID from the DB
-      const longcatRow = db.prepare("SELECT id FROM models WHERE platform = 'longcat' AND enabled = 1").get() as any;
+      const longcatRow = db.prepare("SELECT id FROM models WHERE platform = 'longcat' AND enabled = 1").get() as { id: number } | undefined;
       if (!longcatRow) {
         // Skip if no longcat models in test DB
         return;

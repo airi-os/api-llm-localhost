@@ -146,7 +146,7 @@ export class CloudflareProvider extends BaseProvider {
     );
     if (res.status === 401 || res.status === 403) return false;
     if (!res.ok) return true; // unexpected non-2xx that isn't auth — don't disable
-    const data = await res.json() as any;
+    const data = await res.json() as { success: boolean; result?: { status: string } };
     return data.success === true && data.result?.status === 'active';
   }
 }

@@ -21,23 +21,24 @@ describe('OpenAICompatProvider', () => {
   it('should call API with correct URL and headers', async () => {
     let capturedUrl = '';
     let capturedHeaders: Record<string, string> = {};
-    let capturedBody: any = null;
+    let capturedBody: { messages: { role: string; content: string }[] } | null = null;
 
-    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
-      capturedUrl = url as string;
-      capturedHeaders = (init as any).headers;
-      capturedBody = JSON.parse((init as any).body);
-      return {
-        ok: true,
-        json: () => Promise.resolve({
-          id: 'test-id',
-          object: 'chat.completion',
-          created: 123,
-          model: 'test-model',
-          choices: [{ index: 0, message: { role: 'assistant', content: 'hi' }, finish_reason: 'stop' }],
-          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-        }),
-      } as any;
+    vi.spyOn(global, 'fetch').mockImplementation(async (url: string, init?: RequestInit): Promise<Response> => {
+      capturedUrl = url;
+      capturedHeaders = init?.headers as Record<string, string>;
+      capturedBody = JSON.parse(init?.body as string) as { messages: { role: string; content: string }[] };
+      const responsePayload = {
+        id: 'test-id',
+        object: 'chat.completion',
+        created: 123,
+        model: 'test-model',
+        choices: [{ index: 0, message: { role: 'assistant', content: 'hi' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      };
+      return new Response(JSON.stringify(responsePayload), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
     });
 
     await provider.chatCompletion('my-key', [{ role: 'user', content: 'test' }], 'test-model');
@@ -45,13 +46,13 @@ describe('OpenAICompatProvider', () => {
     expect(capturedUrl).toBe('https://api.test.com/v1/chat/completions');
     expect(capturedHeaders['Authorization']).toBe('Bearer my-key');
     expect(capturedHeaders['X-Custom']).toBe('test');
-    expect(capturedBody.messages[0].role).toBe('user');
+    expect(capturedBody!.messages[0].role).toBe('user');
   });
 
   it('should pass tool-calling params through untouched', async () => {
-    let capturedBody: any = null;
-    vi.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
-      capturedBody = JSON.parse((init as any).body);
+    let capturedBody: { tools: unknown[]; tool_choice: string; parallel_tool_calls: boolean } | null = null;
+    vi.spyOn(global, 'fetch').mockImplementation(async (_url: string, init: RequestInit) => {
+      capturedBody = JSON.parse(init.body as string) as { tools: unknown[]; tool_choice: string; parallel_tool_calls: boolean };
       return {
         ok: true,
         json: () => Promise.resolve({
@@ -62,7 +63,7 @@ describe('OpenAICompatProvider', () => {
           choices: [{ index: 0, message: { role: 'assistant', content: null, tool_calls: [] }, finish_reason: 'stop' }],
           usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
         }),
-      } as any;
+      } as Response;
     });
 
     await provider.chatCompletion(
@@ -87,9 +88,9 @@ describe('OpenAICompatProvider', () => {
       },
     );
 
-    expect(capturedBody.tools).toHaveLength(1);
-    expect(capturedBody.tool_choice).toBe('required');
-    expect(capturedBody.parallel_tool_calls).toBe(true);
+    expect(capturedBody?.tools).toHaveLength(1);
+    expect(capturedBody?.tool_choice).toBe('required');
+    expect(capturedBody?.parallel_tool_calls).toBe(true);
   });
 
   it('should throw on error response', async () => {
@@ -98,7 +99,7 @@ describe('OpenAICompatProvider', () => {
       status: 429,
       statusText: 'Rate Limited',
       json: () => Promise.resolve({ error: { message: 'Too many requests' } }),
-    } as any);
+    } as Response);
 
     await expect(
       provider.chatCompletion('key', [{ role: 'user', content: 'hi' }], 'model')
@@ -106,12 +107,12 @@ describe('OpenAICompatProvider', () => {
   });
 
   it('should validate key using models endpoint', async () => {
-    vi.spyOn(global, 'fetch').mockResolvedValueOnce({ ok: true, status: 200 } as any);
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce({ ok: true, status: 200 } as unknown as Response);
     expect(await provider.validateKey('valid')).toBe(true);
   });
 
   it('validateKey returns false on confirmed 401', async () => {
-    vi.spyOn(global, 'fetch').mockResolvedValueOnce({ ok: false, status: 401 } as any);
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce({ ok: false, status: 401 } as Response);
     expect(await provider.validateKey('bad')).toBe(false);
   });
 
@@ -132,7 +133,7 @@ describe('OpenAICompatProvider', () => {
         }],
         usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
       }),
-    } as any);
+    } as unknown as Response);
 
     const result = await provider.chatCompletion('k', [{ role: 'user', content: 'hi' }], 'm');
     expect(result.choices[0].message.content).toBe('the actual answer');
@@ -150,7 +151,7 @@ describe('OpenAICompatProvider', () => {
         }],
         usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
       }),
-    } as any);
+    } as unknown as Response);
 
     const result = await provider.chatCompletion('k', [{ role: 'user', content: 'hi' }], 'm');
     expect(result.choices[0].message.content).toBe('part one part two');
@@ -168,7 +169,7 @@ describe('OpenAICompatProvider', () => {
         }],
         usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
       }),
-    } as any);
+    } as unknown as Response);
 
     const result = await provider.chatCompletion('k', [{ role: 'user', content: 'hi' }], 'm');
     expect(result.choices[0].message.content).toBe('ollama answer');
@@ -186,7 +187,7 @@ describe('OpenAICompatProvider', () => {
         }],
         usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
       }),
-    } as any);
+    } as unknown as Response);
 
     const result = await provider.chatCompletion('k', [{ role: 'user', content: 'hi' }], 'm');
     expect(result.choices[0].message.content).toBe('preferred');
@@ -209,7 +210,7 @@ describe('OpenAICompatProvider', () => {
         }],
         usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
       }),
-    } as any);
+    } as unknown as Response);
 
     const result = await provider.chatCompletion('k', [{ role: 'user', content: 'hi' }], 'm');
     expect(result.choices[0].message.content).toBeNull();
@@ -228,7 +229,7 @@ describe('OpenAICompatProvider', () => {
         }],
         usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
       }),
-    } as any);
+    } as Response);
 
     const result = await provider.chatCompletion('k', [{ role: 'user', content: 'hi' }], 'm');
     expect(result.choices[0].message.content).toBe('normal answer');
@@ -251,11 +252,11 @@ describe('OpenAICompatProvider - platform instances', () => {
 
   for (const p of platforms) {
     it(`${p.name} provider should make requests to ${p.baseUrl}`, async () => {
-      const provider = new OpenAICompatProvider(p as any);
+      const provider = new OpenAICompatProvider(p as unknown);
 
       let capturedUrl = '';
-      vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
-        capturedUrl = url as string;
+      vi.spyOn(global, 'fetch').mockImplementation(async (url: RequestInfo) => {
+        capturedUrl = typeof url === 'string' ? url : url.toString();
         return {
           ok: true,
           json: () => Promise.resolve({
@@ -263,7 +264,7 @@ describe('OpenAICompatProvider - platform instances', () => {
             choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
             usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
           }),
-        } as any;
+        } as Response;
       });
 
       const result = await provider.chatCompletion('key', [{ role: 'user', content: 'hi' }], 'model');

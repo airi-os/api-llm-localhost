@@ -1,16 +1,34 @@
 import type { Request, Response, NextFunction } from 'express';
 
-export function errorHandler(err: Error, _req: Request, res: Response, next: NextFunction) {
-  console.error('[Error]', err.message);
+export function errorHandler(err: unknown, _req: Request, res: Response, next: NextFunction): void {
+  let message: string;
+  let name: string;
+  let statusCode = 500;
 
-  if (res.headersSent) return next(err);
+  if (err instanceof Error) {
+    message = err.message;
+    name = err.name;
+    const errWithStatus = err as Error & { status?: number };
+    if (typeof errWithStatus.status === 'number') {
+      statusCode = errWithStatus.status;
+    }
+  } else {
+    message = 'Unknown error';
+    name = 'server_error';
+  }
 
-  const status = (err as any).status ?? 500;
-  const exposeMessage = status < 500 || process.env.NODE_ENV !== 'production';
-  res.status(status).json({
+  console.error('[Error]', message);
+
+  if (res.headersSent) {
+    return next(err);
+  }
+
+  const exposeMessage = statusCode < 500 || process.env.NODE_ENV !== 'production';
+
+  res.status(statusCode).json({
     error: {
-      message: exposeMessage ? err.message : 'Internal server error',
-      type: err.name ?? 'server_error',
+      message: exposeMessage ? message : 'Internal server error',
+      type: name,
     },
   });
 }

@@ -25,6 +25,14 @@ analyticsRouter.get('/summary', (req: Request, res: Response) => {
   const since = getSinceTimestamp(range);
   const db = getDb();
 
+  type Stats = {
+    total_requests: number | null;
+    success_count: number | null;
+    total_input_tokens: number | null;
+    total_output_tokens: number | null;
+    avg_latency_ms: number | null;
+  };
+
   const stats = db.prepare(`
     SELECT
       COUNT(*) as total_requests,
@@ -34,10 +42,10 @@ analyticsRouter.get('/summary', (req: Request, res: Response) => {
       AVG(latency_ms) as avg_latency_ms
     FROM requests
     WHERE created_at >= ?
-  `).get(since) as any;
+  `).get(since) as Stats;
 
   const totalRequests = stats.total_requests ?? 0;
-  const successRate = totalRequests > 0 ? (stats.success_count / totalRequests) * 100 : 0;
+  const successRate = totalRequests > 0 ? (stats.success_count ?? 0) / totalRequests * 100 : 0;
   const totalTokens = (stats.total_input_tokens ?? 0) + (stats.total_output_tokens ?? 0);
 
   // Estimate cost savings: average ~$3/M input + $15/M output tokens (GPT-4o pricing)
@@ -55,6 +63,20 @@ analyticsRouter.get('/summary', (req: Request, res: Response) => {
 });
 
 // Stats grouped by model
+type ModelStatsRow = {
+  platform: string;
+  model_id: string;
+  display_name: string | null;
+  intelligence_rank: number | null;
+  requests: number;
+  success_rate: number;
+  avg_latency_ms: number;
+  avg_ttfb_ms: number | null;
+  total_input_tokens: number | null;
+  total_output_tokens: number | null;
+  output_tokens_per_sec: number | null;
+};
+
 analyticsRouter.get('/by-model', (req: Request, res: Response) => {
   const range = (req.query.range as string) ?? '7d';
   const since = getSinceTimestamp(range);
@@ -78,7 +100,7 @@ analyticsRouter.get('/by-model', (req: Request, res: Response) => {
     WHERE r.created_at >= ?
     GROUP BY r.platform, r.model_id
     ORDER BY requests DESC
-  `).all(since) as any[];
+  `).all(since) as ModelStatsRow[];
 
   res.json(rows.map(r => ({
     platform: r.platform,
@@ -96,6 +118,16 @@ analyticsRouter.get('/by-model', (req: Request, res: Response) => {
 });
 
 // Stats grouped by platform
+type PlatformAnalyticsRow = {
+  platform: string;
+  requests: number;
+  success_rate: number;
+  avg_latency_ms: number;
+  total_input_tokens: number | null;
+  total_output_tokens: number | null;
+  output_tokens_per_sec: number | null;
+};
+
 analyticsRouter.get('/by-platform', (req: Request, res: Response) => {
   const range = (req.query.range as string) ?? '7d';
   const since = getSinceTimestamp(range);
@@ -114,7 +146,7 @@ analyticsRouter.get('/by-platform', (req: Request, res: Response) => {
     WHERE created_at >= ?
     GROUP BY platform
     ORDER BY requests DESC
-  `).all(since) as any[];
+  `).all(since) as PlatformAnalyticsRow[];
 
   res.json(rows.map(r => ({
     platform: r.platform,
@@ -147,7 +179,7 @@ analyticsRouter.get('/timeline', (req: Request, res: Response) => {
     WHERE created_at >= ?
     GROUP BY strftime('${dateFormat}', created_at)
     ORDER BY timestamp ASC
-  `).all(since) as any[];
+  `).all(since) as { timestamp: string; requests: number; success_count: number; failure_count: number }[];
 
   res.json(rows.map(r => ({
     timestamp: r.timestamp,
@@ -183,7 +215,12 @@ analyticsRouter.get('/error-distribution', (req: Request, res: Response) => {
     WHERE status = 'error' AND created_at >= ?
     GROUP BY platform, error_category
     ORDER BY count DESC
-  `).all(since) as any[];
+  `).all(since) as {
+    platform: string;
+    model_id: string;
+    error_category: string;
+    count: number;
+  }[];
 
   // Also get totals by category
   const byCategory = db.prepare(`
@@ -203,7 +240,10 @@ analyticsRouter.get('/error-distribution', (req: Request, res: Response) => {
     WHERE status = 'error' AND created_at >= ?
     GROUP BY category
     ORDER BY count DESC
-  `).all(since) as any[];
+  `).all(since) as {
+    category: string;
+    count: number;
+  }[];
 
   // Errors by platform
   const byPlatform = db.prepare(`
@@ -212,7 +252,10 @@ analyticsRouter.get('/error-distribution', (req: Request, res: Response) => {
     WHERE status = 'error' AND created_at >= ?
     GROUP BY platform
     ORDER BY count DESC
-  `).all(since) as any[];
+  `).all(since) as {
+    platform: string;
+    count: number;
+  }[];
 
   res.json({
     byCategory,
@@ -233,7 +276,14 @@ analyticsRouter.get('/errors', (req: Request, res: Response) => {
     WHERE status = 'error' AND created_at >= ?
     ORDER BY created_at DESC
     LIMIT 50
-  `).all(since) as any[];
+  `).all(since) as {
+    id: number;
+    platform: string;
+    model_id: string;
+    error: string;
+    latency_ms: number;
+    created_at: string;
+  }[];
 
   res.json(rows.map(r => ({
     id: r.id,

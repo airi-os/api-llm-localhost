@@ -596,7 +596,7 @@ export function routeRequest(
   for (const entry of sorted) {
     if (skipModels?.has(entry.model_db_id) && entry.model_db_id !== preferredModelDbId) continue;
 
-    const provider = getProvider(entry.platform as any);
+    const provider = getProvider(entry.platform);
     if (!provider) continue;
 
     const keys = db.prepare(
@@ -674,7 +674,7 @@ export function routeRequest(
     roundRobinIndex.set(rrKey, idx);
   }
 
-  const err = new Error('All models exhausted. Add more API keys or wait for rate limits to reset.') as any;
-  err.status = 429;
+  const err = new Error('All models exhausted. Add more API keys or wait for rate limits to reset.');
+  (err as { status: number }).status = 429;
   throw err;
 }

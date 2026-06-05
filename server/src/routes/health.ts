@@ -7,6 +7,27 @@ import { hasProvider } from '../providers/index.js';
 export const healthRouter: Router = Router();
 
 // Get health status for all platforms
+interface PlatformStats {
+  platform: string;
+  total_keys: number;
+  healthy_keys: number;
+  rate_limited_keys: number;
+  invalid_keys: number;
+  error_keys: number;
+  unknown_keys: number;
+  enabled_keys: number;
+}
+
+interface ApiKeyRow {
+  id: number;
+  platform: string;
+  label: string;
+  status: string;
+  enabled: number;
+  created_at: string;
+  last_checked_at: string;
+}
+
 healthRouter.get('/', (_req: Request, res: Response) => {
   const db = getDb();
 
@@ -22,13 +43,13 @@ healthRouter.get('/', (_req: Request, res: Response) => {
       SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) as enabled_keys
     FROM api_keys
     GROUP BY platform
-  `).all() as any[];
+  `).all() as PlatformStats[];
 
   const keys = db.prepare(`
     SELECT id, platform, label, status, enabled, created_at, last_checked_at
     FROM api_keys
     ORDER BY platform, created_at DESC
-  `).all() as any[];
+  `).all() as ApiKeyRow[];
 
   res.json({
     platforms: platforms.map(p => ({

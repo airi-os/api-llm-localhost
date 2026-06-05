@@ -161,7 +161,7 @@ function resetAllConsecutiveFailures(
   // No longer tracking consecutive failures; function retained for compatibility.
 }
 
-function isTruncatedResponse(errOrContent: any): boolean {
+function isTruncatedResponse(errOrContent: unknown): boolean {
   if (!errOrContent) return false;
   let text: string;
   if (typeof errOrContent === 'string') {
@@ -252,7 +252,12 @@ proxyRouter.use((req, res, next) => {
 // OpenAI-compatible /models endpoint (used by Hermes for metadata)
 proxyRouter.get('/models', (_req: Request, res: Response) => {
   const db = getDb();
-  const models = db.prepare('SELECT platform, model_id, display_name, context_window FROM models WHERE enabled = 1 ORDER BY intelligence_rank').all() as any[];
+  const models = db.prepare('SELECT platform, model_id, display_name, context_window FROM models WHERE enabled = 1 ORDER BY intelligence_rank').all() as {
+    platform: string;
+    model_id: string;
+    display_name: string;
+    context_window: number;
+  }[];
   res.json({
     object: 'list',
     data: [
@@ -286,13 +291,13 @@ proxyRouter.get('/models', (_req: Request, res: Response) => {
 
 // OpenAI-compatible GET /models/:id endpoint
 proxyRouter.get(/^\/models\/(.+)$/, (req: Request, res: Response) => {
-  const id = (req.params as any)[0] as string;
+  const id: string = req.params[0];
   if (id === AUTO_MODEL_ID || id === AUTO_SMART_MODEL_ID) {
     res.json({ id, object: 'model', created: 0, owned_by: 'freellmapi' });
     return;
   }
   const db = getDb();
-  const model = db.prepare('SELECT platform, model_id, display_name, context_window FROM models WHERE model_id = ? AND enabled = 1').get(id) as any;
+  const model = db.prepare('SELECT platform, model_id, display_name, context_window FROM models WHERE model_id = ? AND enabled = 1').get(id) as { platform: string; model_id: string; display_name: string; context_window: number; } | undefined;
   if (!model) {
     res.status(404).json({ error: { message: `Model '${id}' not found`, type: 'invalid_request_error' } });
     return;
@@ -502,20 +507,33 @@ function isChatToolDefinition(tool: ResponseTool): tool is ChatToolDefinition {
   return 'function' in tool;
 }
 
-function getErrorStatus(err: any): number | undefined {
-  const status = err?.status ?? err?.response?.status;
-  return typeof status === 'number' ? status : undefined;
+function getErrorStatus(err: unknown): number | undefined {
+  if (typeof err === 'object' && err !== null) {
+    const e = err as Record<string, unknown>;
+    const statusValue = e.status ?? (e.response as Record<string, unknown> | undefined)?.status;
+    return typeof statusValue === 'number' ? statusValue : undefined;
+  }
+  return undefined;
 }
 
 function isBanEligibleStatus(status: number): boolean {
   return status === 500 || status === 502 || status === 503 || status === 504;
 }
 
-function getErrorMessage(err: any): string {
-  return String(err?.message ?? err?.error?.message ?? 'Unknown provider error');
+function getErrorMessage(err: unknown): string {
+  if (typeof err === 'object' && err !== null) {
+    if ('message' in err && typeof (err as any).message === 'string') {
+      return (err as { message: string }).message;
+    }
+    const errorProp = (err as any).error;
+    if (typeof errorProp === 'object' && errorProp !== null && 'message' in errorProp && typeof (errorProp as any).message === 'string') {
+      return (errorProp as { message: string }).message;
+    }
+  }
+  return 'Unknown provider error';
 }
 
-function isRateLimitError(err: any): boolean {
+function isRateLimitError(err: unknown): boolean {
   const status = getErrorStatus(err);
   if (status === 429) return true;
 
@@ -524,7 +542,7 @@ function isRateLimitError(err: any): boolean {
     || msg.includes('quota') || msg.includes('resource_exhausted');
 }
 
-function isAuthError(err: any): boolean {
+function isAuthError(err: unknown): boolean {
   const status = getErrorStatus(err);
   if (status === 401 || status === 403) return true;
 
@@ -532,7 +550,7 @@ function isAuthError(err: any): boolean {
   return msg.includes('unauthorized') || msg.includes('forbidden') || msg.includes('invalid api key');
 }
 
-function isRetryableError(err: any): boolean {
+function isRetryableError(err: unknown): boolean {
   const status = getErrorStatus(err);
   if (status === 401 || status === 403) return true;
   if (status === 413 || status === 429 || status === 400 || status === 404 || status === 408 || status === 409
@@ -553,7 +571,8 @@ function isRetryableError(err: any): boolean {
     || msg.includes('400') || msg.includes('bad request') || msg.includes('invalid json payload');
 }
 
-function isRetryableStreamError(streamErr: any): boolean {
+function isRetryableStreamError(streamErr: unknown): boolean {
+  if (typeof streamErr !== 'object' || streamErr === null) return false;
   const status = getErrorStatus(streamErr);
   if (status === 429 || status === 401 || status === 403 || status === 408) return true;
 
@@ -567,11 +586,11 @@ function isRetryableStreamError(streamErr: any): boolean {
     || msg.includes('econnaborted') || msg.includes('connreset');
 }
 
-function shouldSkipModelOnRetry(err: any): boolean {
+function shouldSkipModelOnRetry(err: unknown): boolean {
   return !isRateLimitError(err) && !isAuthError(err);
 }
 
-function summarizeProviderError(err: any): string {
+function summarizeProviderError(err: unknown): string {
   const status = getErrorStatus(err);
   const message = getErrorMessage(err).replace(/\s+/g, ' ').trim();
   return `${status ? `${status} ` : ''}${message}`.slice(0, 240);
@@ -1271,7 +1290,7 @@ async function handleChatCompletion(
   // Retry loop: skip bad keys and, for non-rate-limit errors, skip the model
   // entirely so the fallback chain can move to a different provider/model.
   const skipKeys = new Set<string>();
-  let lastError: any = null;
+  let lastError: unknown = null;
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     let route: RouteResult;
@@ -1284,7 +1303,7 @@ async function handleChatCompletion(
         skipModels.size > 0 ? skipModels : undefined,
         preferredKeyId,
       );
-    } catch (err: any) {
+    } catch (err: unknown) {
       // No more models available
       if (lastError) {
         const status = isRateLimitError(lastError) ? 429 : 502;
@@ -1297,8 +1316,14 @@ async function handleChatCompletion(
           },
         });
       } else {
-        res.status(err.status ?? 503).json({
-          error: { message: err.message, type: 'routing_error' },
+        const statusCode = typeof err === 'object' && err !== null && 'status' in err && typeof (err as Record<string, unknown>).status === 'number'
+          ? (err as {status: number}).status
+          : 503;
+        const message = typeof err === 'object' && err !== null && 'message' in err && typeof (err as Record<string, unknown>).message === 'string'
+          ? (err as {message: string}).message
+          : String(err);
+        res.status(statusCode).json({
+          error: { message, type: 'routing_error' },
         });
       }
       return;
@@ -1485,13 +1510,14 @@ async function handleChatCompletion(
           resetAllConsecutiveFailures(normalizedMessages, routingMode);
           logRequest(route.platform, route.modelId, 'success', estimatedInputTokens, totalOutputTokens, Date.now() - start, ttfbMs, null);
           return;
-        } catch (streamErr: any) {
-          if (streamStarted) {
+        } catch (streamErr: unknown) {
+            const err = streamErr instanceof Error ? streamErr : new Error(String(streamErr));
+            if (streamStarted) {
             // 5xx failure detection for mid-stream errors
             // All providers: skip the specific model for this session
-            const streamErrStatus = getErrorStatus(streamErr);
+            const streamErrStatus = getErrorStatus(err);
             if (streamErrStatus && isBanEligibleStatus(streamErrStatus)) {
-                const action = evaluateThreadProtection({ platform: route.platform, kind: '5xx', midStream: true, modelDbId: route.modelDbId, error: streamErr });
+                const action = evaluateThreadProtection({ platform: route.platform, kind: '5xx', midStream: true, modelDbId: route.modelDbId, error: err });
                 if (action.banProvider) {
                   console.warn(`[Proxy] Mid-stream 5xx from ${route.platform} — banning provider for session (${action.reason})`);
                   banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
@@ -1691,15 +1717,16 @@ async function handleChatCompletion(
          }
        }
      }
-   } catch (err: any) {
+   } catch (err: unknown) {
       const latency = Date.now() - start;
-      logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, null, err.message);
+      const errMessage = err instanceof Error ? err.message : String(err);
+      logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, null, errMessage);
 
       // 5xx failure detection
-         const errStatus = getErrorStatus(err);
+         const errStatus = getErrorStatus(err as any);
          const isTransientCooldownEligible = (errStatus !== undefined && errStatus >= 500 && errStatus < 600) || errStatus === undefined;
          if (errStatus && isBanEligibleStatus(errStatus)) {
-           const action = evaluateThreadProtection({ platform: route.platform, kind: '5xx', midStream: false, modelDbId: route.modelDbId, error: err });
+           const action = evaluateThreadProtection({ platform: route.platform, kind: '5xx', midStream: false, modelDbId: route.modelDbId, error: err as any });
            if (action.banProvider) {
              console.warn(`[Proxy] 5xx from ${route.platform} — banning provider for session (${action.reason})`);
              banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);

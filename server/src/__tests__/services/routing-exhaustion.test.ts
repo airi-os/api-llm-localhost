@@ -57,12 +57,12 @@ describe('Routing Key Exhaustion', () => {
     // Mock behavior:
     // Key B is exhausted (returns false for canMakeRequest)
     // Key A is functional (returns true)
-    (ratelimit.canMakeRequest as any).mockImplementation((platform, modelId, keyId) => {
+    (ratelimit.canMakeRequest as jest.Mock).mockImplementation((platform, modelId, keyId) => {
       if (keyId === keyB.id) return false;
       if (keyId === keyA.id) return true;
       return true;
     });
-    (ratelimit.canUseTokens as any).mockReturnValue(true);
+    (ratelimit.canUseTokens as jest.Mock).mockReturnValue(true);
 
     db.prepare("UPDATE fallback_config SET enabled = 0 WHERE model_db_id = (SELECT id FROM models WHERE model_id = 'test-flash')").run();
 
@@ -76,17 +76,17 @@ describe('Routing Key Exhaustion', () => {
   });
 
   it('should throw 429 when every key on every model is exhausted', () => {
-    (ratelimit.canMakeRequest as any).mockReturnValue(false);
+    (ratelimit.canMakeRequest as jest.Mock).mockReturnValue(false);
     expect(() => routeRequest(100)).toThrow(/All models exhausted/);
   });
 
   it('should fall back to Flash when Pro is exhausted but Flash has quota', () => {
-    (ratelimit.canMakeRequest as any).mockImplementation((_platform: string, modelId: string) => {
+    (ratelimit.canMakeRequest as jest.MockedFunction<typeof ratelimit.canMakeRequest>).mockImplementation((_platform: string, modelId: string) => {
       if (modelId === 'test-pro') return false;
       if (modelId === 'test-flash') return true;
       return true;
     });
-    (ratelimit.canUseTokens as any).mockReturnValue(true);
+    (ratelimit.canUseTokens as jest.MockedFunction<typeof ratelimit.canUseTokens>).mockReturnValue(true);
 
     const result = routeRequest(100);
     expect(result.modelId).toBe('test-flash');

@@ -11,10 +11,10 @@ const failureCount = new Map<number, number>();
 
 export async function checkKeyHealth(keyId: number): Promise<KeyStatus> {
   const db = getDb();
-  const row = db.prepare('SELECT * FROM api_keys WHERE id = ?').get(keyId) as any;
+  const row = db.prepare('SELECT * FROM api_keys WHERE id = ?').get(keyId) as { platform: Platform; encrypted_key: string; iv: string; auth_tag: string; } | undefined;
   if (!row) return 'error';
 
-  const provider = getProvider(row.platform as Platform);
+  const provider = getProvider(row.platform);
   if (!provider) return 'error';
 
   try {
@@ -39,11 +39,9 @@ export async function checkKeyHealth(keyId: number): Promise<KeyStatus> {
     }
 
     return status;
-  } catch (err: any) {
-    // Transport errors (DNS/timeout/TLS) — provider unreachable, not necessarily
-    // a bad key. Mark status='error' but do NOT increment failure counter — auto-
-    // disable is reserved for confirmed 401/403 (returned by validateKey as false).
-    console.error(`[Health] Key ${keyId} transport error:`, err.message);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[Health] Key ${keyId} transport error:`, message);
     db.prepare("UPDATE api_keys SET status = ?, last_checked_at = datetime('now') WHERE id = ?")
       .run('error', keyId);
     return 'error';
