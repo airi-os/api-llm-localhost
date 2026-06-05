@@ -642,7 +642,7 @@ export function routeRequest(
       }
     }
 
-    for (let attempt = 0; attempt < keys.length; attempt++) {
+    for (const _ of keys) {
       const key = keys[idx % keys.length];
       idx++;
 
