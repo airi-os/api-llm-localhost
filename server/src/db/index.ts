@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { initEncryptionKey } from '../lib/crypto.js';
+import './services/logBuffer.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DB_PATH = path.resolve(__dirname, '../../data/freeapi.db');
@@ -53,7 +54,6 @@ export function initDb(dbPath?: string): Database.Database {
   migrateModelsV16(db);
   ensureUnifiedKey(db);
 
-  console.log(`Database initialized at ${resolvedPath}`);
   return db;
 }
 
@@ -187,7 +187,6 @@ function seedModels(db: Database.Database) {
   });
   insertFallbacks();
 
-  console.log(`Seeded ${models.length} models and fallback config`);
 }
 
 /**
@@ -1096,7 +1095,6 @@ function ensureUnifiedKey(db: Database.Database) {
   if (!existing) {
     const key = `freellmapi-${crypto.randomBytes(24).toString('hex')}`;
     db.prepare("INSERT INTO settings (key, value) VALUES ('unified_api_key', ?)").run(key);
-    console.log(`\n  Your unified API key: ${key}\n`);
   }
 }
 

@@ -55,13 +55,10 @@ for (const row of models) {
   }
 }
 
-console.log('\n=== Results ===\n');
 const pad = (s: string, n: number) => s.length > n ? s.slice(0, n - 1) + '…' : s.padEnd(n);
 for (const r of results) {
   const status = r.ok ? '✓' : '✗';
-  console.log(`${status} ${pad(r.row.platform, 12)} ${pad(r.row.model_id, 52)} ${String(r.ms).padStart(5)}ms  ${r.ok ? `"${r.reply}"` : r.error}`);
 }
 const okCount = results.filter(r => r.ok).length;
-console.log(`\n${okCount}/${results.length} models working\n`);
 
 process.exit(0);

@@ -8,6 +8,7 @@ import { recordRequest, recordTokens, setCooldown } from '../services/ratelimit.
 import { getDb, getUnifiedApiKey } from '../db/index.js';
 import { extractBearerToken, timingSafeStringEqual } from '../lib/secrets.js';
 import { getProtectionLevel, evaluateThreadProtection } from '../services/threadProtection.js';
+import '../services/logBuffer.js';
 
 export const proxyRouter: Router = Router();
 
@@ -54,36 +55,30 @@ function getStickyModel(messages: ChatMessage[], routingMode: RoutingMode): numb
 
   const entry = stickySessionMap.get(key);
   if (!entry) {
-    console.log(`[Sticky] miss key=${key.slice(0, 8)} | msgs=${messages.length} → free routing`);
     return undefined;
   }
 
   if (Date.now() - entry.lastUsed > STICKY_TTL_MS) {
     stickySessionMap.delete(key);
-    console.log(`[Sticky] expired key=${key.slice(0, 8)} | msgs=${messages.length} → free routing`);
     return undefined;
   }
 
-  console.log(`[Sticky] hit key=${key.slice(0, 8)} | msgs=${messages.length} → modelDbId=${entry.modelDbId}`);
   return entry.modelDbId;
 }
 
 function getStickyKey(messages: ChatMessage[], routingMode: RoutingMode): number | undefined {
   const key = getSessionKey(messages, routingMode);
   if (!key) {
-    console.log(`[Sticky] key miss session=unset | no session key derivable from messages`);
     return undefined;
   }
 
   const entry = stickySessionMap.get(key);
   if (!entry) {
-    console.log(`[Sticky] key miss session=${key.slice(0, 8)} | no sticky entry`);
     return undefined;
   }
 
   if (Date.now() - entry.lastUsed > STICKY_TTL_MS) {
     stickySessionMap.delete(key);
-    console.log(`[Sticky] key expired session=${key.slice(0, 8)} | ttl=${STICKY_TTL_MS}ms`);
     return undefined;
   }
 
@@ -92,15 +87,12 @@ function getStickyKey(messages: ChatMessage[], routingMode: RoutingMode): number
     const db = getDb();
     const modelRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(entry.modelDbId) as { platform: string } | undefined;
     if (modelRow && entry.bannedPlatforms.has(modelRow.platform)) {
-      console.log(`[Sticky] key skipped session=${key.slice(0, 8)} | model platform=${modelRow.platform} is banned`);
       return undefined;
     }
   }
 
   if (entry.keyId !== undefined) {
-    console.log(`[Sticky] key hit session=${key.slice(0, 8)} → keyId=${entry.keyId}`);
   } else {
-    console.log(`[Sticky] key unset session=${key.slice(0, 8)} | sticky entry has no keyId`);
   }
   return entry.keyId;
 }
@@ -138,7 +130,6 @@ function banPlatformFromSession(
   entry.bannedPlatforms.add(platform);
   entry.lastUsed = Date.now();
   stickySessionMap.set(key, entry);
-  console.log(`[Sticky] banned platform=${platform} for session=${key.slice(0, 8)} | bannedPlatforms=${Array.from(entry.bannedPlatforms).join(',')}`);
 }
 
 function addProviderModelsToSkipModels(skipModels: Set<number>, provider: string): void {
@@ -151,7 +142,6 @@ function addProviderModelsToSkipModels(skipModels: Set<number>, provider: string
   for (const m of providerModels) {
     skipModels.add(m.id);
   }
-  console.log(`[Sticky] added ${providerModels.length} ${provider} model(s) to skipModels: [${providerModels.map(m => m.id).join(',')}]`);
 }
 
 function resetAllConsecutiveFailures(
@@ -200,7 +190,6 @@ function clearStickyModel(messages: ChatMessage[], routingMode: RoutingMode) {
   if (!key) return;
   if (!stickySessionMap.has(key)) return;
   stickySessionMap.delete(key);
-  console.log(`[Sticky] cleared key=${key.slice(0, 8)} | msgs=${messages.length} → non-retryable error`);
 }
 
 function clearStickyKey(messages: ChatMessage[], routingMode: RoutingMode) {
@@ -211,7 +200,6 @@ function clearStickyKey(messages: ChatMessage[], routingMode: RoutingMode) {
   const clearedKeyId = entry.keyId;
   entry.keyId = undefined;
   stickySessionMap.set(key, entry);
-  console.log(`[Sticky] cleared key=${key.slice(0, 8)} | keyId=${clearedKeyId} → auth error, retrying (modelDbId=${entry.modelDbId} retained)`);
 }
 
 function setStickyModel(messages: ChatMessage[], modelDbId: number, routingMode: RoutingMode, keyId?: number) {
@@ -223,7 +211,6 @@ function setStickyModel(messages: ChatMessage[], modelDbId: number, routingMode:
   const bannedPlatforms = existing?.bannedPlatforms;
 
   stickySessionMap.set(key, { modelDbId, keyId, bannedPlatforms, lastUsed: Date.now() });
-  console.log(`[Sticky] set key=${key.slice(0, 8)} | msgs=${messages.length} → modelDbId=${modelDbId}${keyId !== undefined ? ` keyId=${keyId}` : ''}${bannedPlatforms && bannedPlatforms.size > 0 ? ` banned=${Array.from(bannedPlatforms).join(',')}` : ''}`);
 
   if (stickySessionMap.size > 500) {
     const now = Date.now();
@@ -477,10 +464,8 @@ function stringifyModelResponseForLog(value: unknown): string {
 function logFinalModelResponse(route: RouteResult, response: unknown, ttfbMs: number | null): void {
   const ttfbStr = ttfbMs !== null ? ` | ttfb=${ttfbMs}ms` : '';
   if (process.env.LOG_SENSITIVE_DATA !== 'true') {
-    console.log(`[Model Response] ${route.platform}/${route.modelId}${ttfbStr}`);
     return;
   }
-  console.log(`[Model Response] ${route.platform}/${route.modelId}${ttfbStr}: ${stringifyModelResponseForLog(response)}`);
 }
 
 interface ResponsesStreamContext {
@@ -658,21 +643,17 @@ function normalizeResponseTools(tools: z.infer<typeof responseCreateSchema>['too
 
 function getPreviousResponseMessages(previousResponseId: string | undefined): ChatMessage[] {
   if (!previousResponseId) {
-    console.log('[Session] no previous_response_id → fresh conversation');
     return [];
   }
   const session = responseSessionMap.get(previousResponseId);
   if (!session) {
-    console.log(`[Session] previous_response_id="${previousResponseId}" not found in map (size=${responseSessionMap.size}) → session miss`);
     return [];
   }
   const ageMs = Date.now() - session.lastUsed;
   if (ageMs > RESPONSE_SESSION_TTL_MS) {
-    console.log(`[Session] previous_response_id="${previousResponseId}" expired (age=${Math.round(ageMs / 1000)}s) → evicted`);
     responseSessionMap.delete(previousResponseId);
     return [];
   }
-  console.log(`[Session] hit previous_response_id="${previousResponseId}" → restored ${session.messages.length} msg(s) (age=${Math.round(ageMs / 1000)}s)`);
   session.lastUsed = Date.now();
   return session.messages.map(message => ({ ...message }));
 }
@@ -694,7 +675,6 @@ function saveResponseSession(responseId: string, itemId: string, messages: ChatM
     messages: stored,
     lastUsed: Date.now(),
   });
-  console.log(`[Session] saved response_id="${responseId}" with ${stored.length} msg(s) (map size=${responseSessionMap.size})`);
   if (assistantMessage) responseItemMap.set(itemId, assistantMessage);
 
   if (responseSessionMap.size <= MAX_RESPONSE_SESSIONS) return;
@@ -1058,7 +1038,6 @@ proxyRouter.post('/responses', async (req: Request, res: Response) => {
   const parsed = responseCreateSchema.safeParse(req.body);
   if (!parsed.success) {
     const message = `Invalid request: ${parsed.error.errors.map(e => e.message).join(', ')}`;
-    console.warn(`[Proxy] /responses rejected: ${message}`);
     res.status(400).json({
       error: {
         message,
@@ -1111,7 +1090,6 @@ async function handleChatCompletion(
   const parsed = chatCompletionSchema.safeParse(body);
   if (!parsed.success) {
     const message = `Invalid request: ${parsed.error.errors.map(e => e.message).join(', ')}`;
-    console.warn(`[Proxy] /chat/completions rejected: ${message}`);
     res.status(400).json({
       error: {
         message,
@@ -1172,7 +1150,6 @@ async function handleChatCompletion(
   const preview = process.env.LOG_SENSITIVE_DATA === 'true' && typeof lastUserMessage?.content === 'string'
     ? lastUserMessage.content.slice(0, 120).replace(/\n/g, ' ')
     : '';
-  console.log(`[Request] ${rawModel ?? 'auto'} | ${normalizedMessages.length} msg(s) | stream=${!!stream}${preview ? ` | "${preview}"` : ''}`);
 
   // Explicit `model` field pins routing. If the catalog has no enabled row
   // matching the requested id, return 400 — silently auto-routing to a
@@ -1188,7 +1165,6 @@ async function handleChatCompletion(
       const disabled = db.prepare('SELECT id FROM models WHERE model_id = ?').get(requestedModel) as { id: number } | undefined;
       const reason = disabled ? 'is disabled' : 'is not in the catalog';
       const message = `Model '${requestedModel}' ${reason}. Omit the 'model' field to auto-route, or call /v1/models for the available list.`;
-      console.warn(`[Proxy] explicit model rejected: ${message}`);
       res.status(400).json({
         error: {
           message,
@@ -1210,7 +1186,6 @@ async function handleChatCompletion(
     const stickyKeyId = getStickyKey(normalizedMessages, routingMode);
     if (stickyKeyId !== undefined) {
       preferredKeyId = stickyKeyId;
-      console.log(`[Sticky] key preferred modelDbId=${preferredModel} keyId=${preferredKeyId}`);
     }
   }
 
@@ -1226,7 +1201,6 @@ async function handleChatCompletion(
       } else if (entry.bannedPlatforms) {
         for (const platform of entry.bannedPlatforms) {
           addProviderModelsToSkipModels(skipModels, platform);
-          console.log(`[Sticky] session banned from ${platform}, adding to skipModels`);
         }
       }
     }
@@ -1236,7 +1210,6 @@ async function handleChatCompletion(
     const db = getDb();
     const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel) as { platform: string } | undefined;
     if (prefRow && isSessionBannedFromPlatform(normalizedMessages, routingMode, prefRow.platform)) {
-      console.log(`[Sticky] skipping preferredModel=${preferredModel} (${prefRow.platform} banned for session)`);
       preferredModel = undefined;
       preferredKeyId = undefined;
     }
@@ -1253,7 +1226,6 @@ async function handleChatCompletion(
       const entry = stickySessionMap.get(sessionKey);
       if (entry && entry.modelDbId === preferredModel && Date.now() - entry.lastUsed <= PROVIDER_BAN_STICKY_COOLDOWN_MS) {
         addProviderModelsToSkipModels(skipModels, prefRow.platform);
-        console.log(`[Sticky] ${prefRow.platform} cooldown active — excluding from bandit routing for this session`);
       }
     }
   }
@@ -1273,7 +1245,6 @@ async function handleChatCompletion(
   for (const active of activeRequests) {
     if (active.sessionKey !== sessionKey && getProtectionLevel(active.platform) === 'provider-ban') {
       addProviderModelsToSkipModels(skipModels, active.platform);
-      console.log(`[Sticky] Active-request safeguard: excluding provider-ban platform=${active.platform} from bandit routing (another session is actively using it)`);
     }
   }
 
@@ -1290,7 +1261,6 @@ async function handleChatCompletion(
       }
     }
     if (cooldownIds.size > 0) {
-      console.log(`[Proxy] transient cooldowns active for model IDs: [${Array.from(cooldownIds).join(",")}]`);
     }
   }
 
@@ -1455,12 +1425,10 @@ async function handleChatCompletion(
             if (isTruncatedResponse(streamTextToCheck)) {
                 const action = evaluateThreadProtection({ platform: route.platform, kind: 'truncation', midStream: false, modelDbId: route.modelDbId });
                 if (action.banProvider) {
-                  console.warn(`[Proxy] Truncated stream content detected from ${route.platform} — banning provider for session (${action.reason})`);
                   banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
                   addProviderModelsToSkipModels(skipModels, route.platform);
                 }
                 if (action.skipModel) {
-                  console.warn(`[Proxy] Truncated stream content detected from ${route.platform} — skipping model ${route.modelId} for session (${action.reason})`);
                   skipModels.add(route.modelDbId);
                 }
             }
@@ -1526,12 +1494,10 @@ async function handleChatCompletion(
             if (streamErrStatus && isBanEligibleStatus(streamErrStatus)) {
                 const action = evaluateThreadProtection({ platform: route.platform, kind: '5xx', midStream: true, modelDbId: route.modelDbId, error: err });
                 if (action.banProvider) {
-                  console.warn(`[Proxy] Mid-stream 5xx from ${route.platform} — banning provider for session (${action.reason})`);
                   banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
                   addProviderModelsToSkipModels(skipModels, route.platform);
                 }
                 if (action.skipModel) {
-                  console.warn(`[Proxy] Mid-stream 5xx from ${route.platform} — skipping model ${route.modelId} only (${action.reason})`);
                   skipModels.add(route.modelDbId);
                 }
                 if (action.clearStickyIfPinned && preferredModel) {
@@ -1544,7 +1510,6 @@ async function handleChatCompletion(
                 }
               // Register global transient cooldown for any 5xx mid-stream error
               transientModelCooldowns.set(route.modelDbId, Date.now() + TRANSIENT_COOLDOWN_MS);
-              console.log(`[TransientCooldown] registered global cooldown for modelDbId=${route.modelDbId} (${TRANSIENT_COOLDOWN_MS / 1000}s)`);
             }
 
             // Generalized truncation detection for any provider (not just LongCat)
@@ -1566,12 +1531,10 @@ async function handleChatCompletion(
             if (isTruncatedResponse(combinedTruncationText)) {
                 const action = evaluateThreadProtection({ platform: route.platform, kind: 'truncation', midStream: true, modelDbId: route.modelDbId, error: streamErr });
                 if (action.banProvider) {
-                  console.warn(`[Proxy] Truncation error mid-stream from ${route.platform} — banning provider for session, ending stream gracefully (${action.reason})`);
                   banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
                   addProviderModelsToSkipModels(skipModels, route.platform);
                 }
                 if (action.skipModel) {
-                  console.warn(`[Proxy] Truncation error mid-stream from ${route.platform} — skipping model ${route.modelId} only, ending stream gracefully (${action.reason})`);
                   skipModels.add(route.modelDbId);
                 }
               try {
@@ -1598,11 +1561,9 @@ async function handleChatCompletion(
             if (isRetryableStreamError(streamErr)) {
               const protection = getProtectionLevel(route.platform);
               if (protection === 'provider-ban') {
-                console.warn(`[Proxy] Mid-stream retryable error from ${route.platform}/${route.modelId} — provider-ban: excluding entire ${route.platform} provider for session`);
                 banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
                 addProviderModelsToSkipModels(skipModels, route.platform);
               } else {
-                console.warn(`[Proxy] Mid-stream retryable error from ${route.platform}/${route.modelId} — model-skip: skipping model for session`);
                 skipModels.add(route.modelDbId);
               }
               // Clear sticky preference if pinned to this platform
@@ -1638,7 +1599,6 @@ async function handleChatCompletion(
             // the client hanging or letting Express's default handler take over.
             // Full upstream message goes to the log; the client sees a generic
             // message so we don't leak provider internals into a partial stream.
-            console.error(`[Proxy] Mid-stream error from ${route.displayName}:`, streamErr instanceof Error ? streamErr.message : String(streamErr));
             const payload = { error: { message: `Provider error (${route.displayName}): stream interrupted`, type: 'stream_error' } };
             try {
               if (responseStreamContext) {
@@ -1737,12 +1697,10 @@ async function handleChatCompletion(
          if (errStatus && isBanEligibleStatus(errStatus)) {
            const action = evaluateThreadProtection({ platform: route.platform, kind: '5xx', midStream: false, modelDbId: route.modelDbId, error: err });
            if (action.banProvider) {
-             console.warn(`[Proxy] 5xx from ${route.platform} — banning provider for session (${action.reason})`);
              banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
              addProviderModelsToSkipModels(skipModels, route.platform);
            }
            if (action.skipModel) {
-             console.warn(`[Proxy] 5xx from ${route.platform} — skipping model ${route.modelId} only (${action.reason})`);
              skipModels.add(route.modelDbId);
            }
            if (action.clearStickyIfPinned && preferredModel) {
@@ -1773,12 +1731,10 @@ async function handleChatCompletion(
            // when all keys are exhausted.
            const action = evaluateThreadProtection({ platform: route.platform, kind: 'retryable', midStream: false, modelDbId: route.modelDbId, error: err });
            if (action.banProvider) {
-             console.warn(`[Proxy] Retryable error from ${route.platform} — banning provider for session (${action.reason})`);
              banPlatformFromSession(normalizedMessages, routingMode, route.platform, route.modelDbId);
              addProviderModelsToSkipModels(skipModels, route.platform);
            }
            if (action.skipModel) {
-             console.warn(`[Proxy] Retryable error from ${route.platform} — skipping model ${route.modelId} (${action.reason})`);
              skipModels.add(route.modelDbId);
            }
            if (action.clearStickyIfPinned && preferredModel) {
@@ -1806,12 +1762,10 @@ async function handleChatCompletion(
         // so the retry unpins the broken key and falls through to round-robin.
         if (isAuthError(err)) {
           const authStatus = getErrorStatus(err);
-          console.warn(`[Proxy] auth error ${authStatus} from ${route.displayName}/${route.modelId}, clearing sticky key for session`);
           clearStickyKey(normalizedMessages, routingMode);
           preferredKeyId = undefined;
         }
         lastError = err;
-        console.warn(`[Proxy] retryable ${summarizeProviderError(err)} from ${route.displayName}/${route.modelId}, fallback (attempt ${attempt + 1}/${MAX_RETRIES})`);
         continue;
       }
 
@@ -1859,6 +1813,5 @@ function logRequest(
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(platform, modelId, status, inputTokens, outputTokens, latencyMs, ttfbMs, error);
   } catch (e) {
-    console.error('Failed to log request:', e);
   }
 }

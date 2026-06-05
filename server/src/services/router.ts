@@ -580,7 +580,6 @@ export function routeRequest(
         }
         const insertIdx = lcPreferred ? longcatEntries.length : 0;
         sorted.splice(insertIdx, 0, owlAlphaEntry);
-        console.log('[Router] Owl Alpha preference active — moving openrouter/owl-alpha to front');
       }
     }
   }
@@ -628,7 +627,6 @@ export function routeRequest(
         const canTokens = canUseTokens(entry.platform, entry.model_id, preferredKey.id, estimatedTokens, limits);
         if (!isSkipped && !isCooling && canRequest && canTokens) {
           const decryptedKey = decrypt(preferredKey.encrypted_key, preferredKey.iv, preferredKey.auth_tag);
-          console.log(`[Router] sticky key preferredKeyId=${preferredKeyId} platform=${entry.platform} model=${entry.model_id}`);
           return {
             provider,
             modelId: entry.model_id,

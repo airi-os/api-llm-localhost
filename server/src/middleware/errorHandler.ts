@@ -17,7 +17,6 @@ export function errorHandler(err: unknown, _req: Request, res: Response, next: N
     name = 'server_error';
   }
 
-  console.error('[Error]', message);
 
   if (res.headersSent) {
     return next(err);
