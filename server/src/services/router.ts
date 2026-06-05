@@ -407,6 +407,13 @@ export function recordRateLimitHit(modelDbId: number) {
 }
 
 /**
+ * Clear all rate limit penalties. For testing only.
+ */
+export function clearAllPenalties() {
+  rateLimitPenalties.clear();
+}
+
+/**
  * Record a success for a model — reduces its penalty so it rises back up.
  */
 export function recordSuccess(modelDbId: number) {
