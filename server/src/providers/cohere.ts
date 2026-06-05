@@ -47,6 +47,11 @@ export class CohereProvider extends BaseProvider {
     }
 
     const data = await res.json() as ChatCompletionResponse;
+
+    if (this.isWrappedError(data)) {
+      this.throwWrappedError(data);
+    }
+
     data._routed_via = { platform: 'cohere', model: modelId };
     return data;
   }
@@ -106,11 +111,17 @@ export class CohereProvider extends BaseProvider {
         if (!trimmed || !trimmed.startsWith('data: ')) continue;
         const data = trimmed.slice(6);
         if (data === '[DONE]') return;
+        let parsed: ChatCompletionChunk;
         try {
-          yield JSON.parse(data) as ChatCompletionChunk;
+          parsed = JSON.parse(data) as ChatCompletionChunk;
         } catch {
           // Skip malformed chunks
+          continue;
         }
+        if (this.isWrappedError(parsed)) {
+          this.throwWrappedError(parsed);
+        }
+        yield parsed;
       }
     }
   }

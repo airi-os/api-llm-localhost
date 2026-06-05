@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vite
 import type { Express } from 'express';
 import { createApp } from '../../app.js';
 import { initDb, getDb, getUnifiedApiKey } from '../../db/index.js';
-import { stickySessionMap, getSessionKey } from '../../routes/proxy.js';
+import { stickySessionMap, getSessionKey, transientModelCooldowns } from '../../routes/proxy.js';
 
 async function request(app: Express, method: string, path: string, body?: any) {
   const server = app.listen(0);
@@ -528,7 +528,10 @@ describe('Proxy tool-calling support', () => {
 
     vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
-      if (urlStr.includes('api.groq.com/openai/v1/chat/completions')) {
+      if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
+        return origFetch(url, init);
+      }
+      if (urlStr.includes('/chat/completions')) {
         providerBody = JSON.parse((init as any).body);
         const chunks = [
           {
@@ -547,13 +550,12 @@ describe('Proxy tool-calling support', () => {
           },
         ];
         const encoder = new TextEncoder();
+        const allData = chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).concat('data: [DONE]\n\n').join('');
         return {
           ok: true,
           body: new ReadableStream({
             start(controller) {
-              for (const value of chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).concat('data: [DONE]\n\n')) {
-                controller.enqueue(encoder.encode(value));
-              }
+              controller.enqueue(encoder.encode(allData));
               controller.close();
             },
           }),
@@ -616,7 +618,10 @@ describe('Proxy tool-calling support', () => {
 
     vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
-      if (urlStr.includes('api.groq.com/openai/v1/chat/completions')) {
+      if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
+        return origFetch(url, init);
+      }
+      if (urlStr.includes('/chat/completions')) {
         providerBodies.push(JSON.parse((init as any).body));
 
         if (providerBodies.length === 1) {
@@ -659,13 +664,12 @@ describe('Proxy tool-calling support', () => {
             },
           ];
           const encoder = new TextEncoder();
+          const allData = chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).concat('data: [DONE]\n\n').join('');
           return {
             ok: true,
             body: new ReadableStream({
               start(controller) {
-                for (const value of chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).concat('data: [DONE]\n\n')) {
-                  controller.enqueue(encoder.encode(value));
-                }
+                controller.enqueue(encoder.encode(allData));
                 controller.close();
               },
             }),
@@ -810,8 +814,9 @@ describe('LongCat sticky session cooldown', () => {
     app = createApp();
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     (stickySessionMap as Map<any, any>).clear();
+    (transientModelCooldowns as Map<any, any>).clear();
     const db = getDb();
     db.prepare('DELETE FROM api_keys').run();
     db.prepare('DELETE FROM requests').run();
@@ -886,7 +891,7 @@ describe('LongCat sticky session cooldown', () => {
     expect(status).toBe(200);
     // Cooldown should have triggered and logged the exclusion message
     expect(logSpy).toHaveBeenCalledWith(
-      expect.stringContaining('[Sticky] LongCat cooldown active')
+      expect.stringContaining('[Sticky] longcat cooldown active')
     );
     // Sticky preference is preserved — request still routes to LongCat
     expect(routedToLongcat).toBe(true);

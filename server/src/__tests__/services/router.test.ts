@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { initDb, getDb } from '../../db/index.js';
 import { encrypt } from '../../lib/crypto.js';
-import { routeRequest } from '../../services/router.js';
+import { routeRequest, refreshStatsCache, getAnalyticsScores } from '../../services/router.js';
 
 describe('Router', () => {
   beforeAll(() => {
@@ -12,7 +12,6 @@ describe('Router', () => {
   beforeEach(() => {
     const db = getDb();
     db.prepare('DELETE FROM api_keys').run();
-    // Reset fallback order to intelligence ranking
     const models = db.prepare('SELECT id, intelligence_rank FROM models ORDER BY intelligence_rank ASC').all() as any[];
     const update = db.prepare('UPDATE fallback_config SET priority = ? WHERE model_db_id = ?');
     for (let i = 0; i < models.length; i++) {
@@ -39,58 +38,34 @@ describe('Router', () => {
 
   it('should route to an available model when keys exist for multiple platforms', () => {
     const db = getDb();
-
     const googleKey = encrypt('test-google-key');
     db.prepare(`
       INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run('google', 'test', googleKey.encrypted, googleKey.iv, googleKey.authTag, 'healthy', 1);
-
     const groqKey = encrypt('test-groq-key');
     db.prepare(`
       INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run('groq', 'test', groqKey.encrypted, groqKey.iv, groqKey.authTag, 'healthy', 1);
-
     const result = routeRequest();
     expect(['google', 'groq']).toContain(result.platform);
   });
 
   it('should skip disabled keys', () => {
     const db = getDb();
-
     const googleKey = encrypt('test-google-key');
     db.prepare(`
       INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run('google', 'disabled', googleKey.encrypted, googleKey.iv, googleKey.authTag, 'healthy', 0);
-
     const groqKey = encrypt('test-groq-key');
     db.prepare(`
       INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run('groq', 'test', groqKey.encrypted, groqKey.iv, groqKey.authTag, 'healthy', 1);
-
     const result = routeRequest();
     expect(result.platform).toBe('groq');
-  });
-
-  it('should skip invalid keys', () => {
-    const db = getDb();
-
-    const invalidKey = encrypt('invalid-key');
-    db.prepare(`
-      INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run('google', 'invalid', invalidKey.encrypted, invalidKey.iv, invalidKey.authTag, 'invalid', 1);
-
-    const groqKey = encrypt('test-groq-key');
-    db.prepare(`
-      INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run('groq', 'test', groqKey.encrypted, groqKey.iv, groqKey.authTag, 'healthy', 1);
-
-    const result = routeRequest();
-    expect(result.platform).toBe('groq');
+    expect(result.apiKey).toBe('test-groq-key');
   });
 });

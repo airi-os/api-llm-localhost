@@ -244,6 +244,11 @@ export class GoogleProvider extends BaseProvider {
     }
 
     const data = await res.json() as GeminiResponse;
+
+    if (this.isWrappedError(data)) {
+      this.throwWrappedError(data);
+    }
+
     const candidate = data.candidates?.[0];
     const parts = candidate?.content?.parts;
     const toolCalls = extractToolCalls(parts);
@@ -355,6 +360,11 @@ export class GoogleProvider extends BaseProvider {
         } catch {
           continue;
         }
+
+        if (this.isWrappedError(chunk)) {
+          this.throwWrappedError(chunk);
+        }
+
         const candidate = chunk.candidates?.[0];
         const parts = candidate?.content?.parts ?? [];
 

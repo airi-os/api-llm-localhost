@@ -68,6 +68,11 @@ export class OpenAICompatProvider extends BaseProvider {
     }
 
     const data = await res.json() as ChatCompletionResponse;
+
+    if (this.isWrappedError(data)) {
+      this.throwWrappedError(data);
+    }
+
     normalizeChoices(data);
     data._routed_via = { platform: this.platform, model: modelId };
     return data;
@@ -108,6 +113,7 @@ export class OpenAICompatProvider extends BaseProvider {
 
     const decoder = new TextDecoder();
     let buffer = '';
+    let hasYielded = false;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -122,11 +128,18 @@ export class OpenAICompatProvider extends BaseProvider {
         if (!trimmed || !trimmed.startsWith('data: ')) continue;
         const data = trimmed.slice(6);
         if (data === '[DONE]') return;
+        let parsed: ChatCompletionChunk;
         try {
-          yield JSON.parse(data) as ChatCompletionChunk;
+          parsed = JSON.parse(data) as ChatCompletionChunk;
         } catch {
           // Skip malformed chunks
+          continue;
         }
+        if (!hasYielded && this.isWrappedError(parsed)) {
+          this.throwWrappedError(parsed);
+        }
+        yield parsed;
+        hasYielded = true;
       }
     }
   }
