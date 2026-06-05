@@ -29,6 +29,7 @@
   - Inside the `try` block at line 126, after `JSON.parse(data)` succeeds:
   - Insert: `if (this.isWrappedError(parsed)) { this.throwWrappedError(parsed); }`
   - Note: assign the result of `JSON.parse` to a variable first, then check, then yield
+  - Only throw wrapped SSE errors before any chunk has been forwarded (first parsed payload only). Track whether any chunk has been yielded and skip the check after the first yield.
 
 - [x] 6. Add wrapped-error check in `CohereProvider.chatCompletion()` in `server/src/providers/cohere.ts`
   - After line 49 (`const data = await res.json() as ChatCompletionResponse;`), before line 50 (`data._routed_via = ...`):

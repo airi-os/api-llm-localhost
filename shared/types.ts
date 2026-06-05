@@ -42,6 +42,14 @@ export interface Model {
 
 export type KeyStatus = 'healthy' | 'rate_limited' | 'invalid' | 'error' | 'unknown';
 
+export const ModelPool = {
+  Fast: 'fast',
+  Balanced: 'balanced',
+  Smart: 'smart',
+} as const;
+
+export type ModelPool = typeof ModelPool[keyof typeof ModelPool];
+
 export interface ApiKey {
   id: number;
   platform: Platform;

@@ -41,7 +41,7 @@ Same fix for `successes` on line 186.
 
 ### BUG-02: Wrapped Error Propagation
 
-**Decision:** Restructure the streaming parse loop to match the Google provider pattern.
+**Decision:** Restructure the streaming parse loop to match the Google provider pattern. **✅ FIXED** — applied to cloudflare, cohere, and openai-compat providers.
 
 The Google provider ([`server/src/providers/google.ts:358-366`](server/src/providers/google.ts:358)) correctly separates parse error handling from wrapped error detection:
 
@@ -57,10 +57,25 @@ if (this.isWrappedError(chunk)) {
 }
 ```
 
-The fix for cloudflare, cohere, and openai-compat is to move the `isWrappedError` check outside the `try/catch` block:
+The bug in cloudflare, cohere, and openai-compat was that `isWrappedError` was INSIDE the try/catch, causing wrapped errors to be silently swallowed:
 
 ```typescript
-// Fixed pattern for cloudflare/cohere/openai-compat:
+// BUGGY pattern (before fix):
+try {
+  parsed = JSON.parse(data) as ChatCompletionChunk;
+  if (this.isWrappedError(parsed)) {    // ← inside try/catch
+    this.throwWrappedError(parsed);      // ← caught by catch below, silently lost
+  }
+} catch {
+  continue;
+}
+yield parsed;
+```
+
+The fix moves `isWrappedError`/`throwWrappedError` outside the try/catch so they propagate to the caller. The current code in cloudflare/cohere/openai-compat now matches this pattern:
+
+```typescript
+// Fixed pattern (current code):
 let parsed: ChatCompletionChunk;
 try {
   parsed = JSON.parse(data) as ChatCompletionChunk;

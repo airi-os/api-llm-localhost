@@ -3,8 +3,17 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { getDb } from '../db/index.js';
 import { getAllPenalties, getAnalyticsScores, getAnalyticsScore, getSmartAnalyticsScore, refreshStatsCache, PENALTY_SCORE_WEIGHT } from '../services/router.js';
+import { ModelPool } from '@freellmapi/shared/types.js';
 
 export const fallbackRouter: Router = Router();
+
+// Models excluded from balanced auto-routing are in the Smart pool.
+// All other models are in the Balanced pool by default.
+function getModelPool(platform: string, modelId: string): ModelPool {
+  if (platform === 'longcat') return ModelPool.Smart;
+  if (platform === 'openrouter' && modelId === 'owl-alpha') return ModelPool.Smart;
+  return ModelPool.Balanced;
+}
 
 fallbackRouter.get('/', (_req: Request, res: Response) => {
   const db = getDb();
@@ -74,6 +83,7 @@ fallbackRouter.get('/', (_req: Request, res: Response) => {
       rpdLimit: r.rpd_limit,
       monthlyTokenBudget: r.monthly_token_budget,
       keyCount: keyCountMap.get(r.platform) ?? 0,
+      pool: getModelPool(r.platform, r.model_id),
     };
   });
 

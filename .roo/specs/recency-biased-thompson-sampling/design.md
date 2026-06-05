@@ -2,7 +2,7 @@
 
 ## Architecture Overview
 
-The change is localized to the stats aggregation pipeline in [`router.ts`](server/src/services/router.ts). The core idea: replace flat `COUNT(*)` / `SUM(CASE ... 1 ELSE 0)` with weighted sums where each request's contribution is scaled by a linear time-decay factor based on its age within the 7-day analytics window.
+The change is localized to the stats aggregation pipeline in [`router.ts`](../../../server/src/services/router.ts). The core idea: replace flat `COUNT(*)` / `SUM(CASE ... 1 ELSE 0)` with weighted sums where each request's contribution is scaled by a linear time-decay factor based on its age within the 7-day analytics window.
 
 ```mermaid
 flowchart TD
@@ -28,7 +28,7 @@ flowchart TD
 
 ## Component Changes
 
-### 1. SQL Query in [`refreshStatsCache()`](server/src/services/router.ts:174)
+### 1. SQL Query in [`refreshStatsCache()`](../../../server/src/services/router.ts:174)
 
 **Current query** (flat aggregation):
 ```sql
@@ -82,7 +82,7 @@ GROUP BY platform, model_id
 | `tok_per_sec` and `avg_ttfb_ms` remain unweighted | Speed/TTFB are quality metrics that don't typically change suddenly; weighting adds complexity without clear benefit. Future enhancement opportunity. |
 | `raw_total` and `raw_successes` included | Dashboard transparency — users need to see actual request counts alongside weighted rates |
 
-### 2. [`ModelStats`](server/src/services/router.ts:153) Interface Extension
+### 2. [`ModelStats`](../../../server/src/services/router.ts:153) Interface Extension
 
 **Current**:
 ```typescript
@@ -112,7 +112,7 @@ The `rawSuccesses` and `rawTotal` fields serve two purposes:
 
 ### 3. Beta Parameter Safety Guards
 
-**Current** (in [`thompsonSampleScore()`](server/src/services/router.ts:264) and [`smartSampleScore()`](server/src/services/router.ts:293)):
+**Current** (in [`thompsonSampleScore()`](../../../server/src/services/router.ts:264) and [`smartSampleScore()`](../../../server/src/services/router.ts:293)):
 ```typescript
 const alpha = (stats?.successes ?? 0) + PRIOR_SUCCESS;
 const beta  = ((stats?.total ?? 0) - (stats?.successes ?? 0)) + PRIOR_FAILURE;
@@ -125,17 +125,17 @@ const beta  = Math.max(0.1, ((stats?.total ?? 0) - (stats?.successes ?? 0))) + P
 ```
 
 The `Math.max(0.1, ...)` guard ensures:
-- Floating-point rounding cannot produce `alpha ≤ 0` or `beta ≤ 0` (which would crash [`sampleGamma()`](server/src/services/router.ts:133))
+- Floating-point rounding cannot produce `alpha ≤ 0` or `beta ≤ 0` (which would crash [`sampleGamma()`](../../../server/src/services/router.ts:133))
 - Even if weighted totals are very small (e.g., 0.002), the prior still dominates appropriately
 - The `0.1` floor is small enough not to distort the prior meaningfully
 
-**Also applied to** [`getAnalyticsScore()`](server/src/services/router.ts:212) and [`getSmartAnalyticsScore()`](server/src/services/router.ts:241) for the `bayesRate` computation:
+**Also applied to** [`getAnalyticsScore()`](../../../server/src/services/router.ts:212) and [`getSmartAnalyticsScore()`](../../../server/src/services/router.ts:241) for the `bayesRate` computation:
 ```typescript
 const bayesRate = (Math.max(0.1, successes) + PRIOR_SUCCESS) 
                 / (Math.max(0.1, total) + PRIOR_SUCCESS + PRIOR_FAILURE);
 ```
 
-### 4. Dashboard Display in [`getAnalyticsScores()`](server/src/services/router.ts:314)
+### 4. Dashboard Display in [`getAnalyticsScores()`](../../../server/src/services/router.ts:314)
 
 **Current**:
 ```typescript
@@ -226,8 +226,8 @@ Weight
 
 | File | Change Type | Description |
 |------|-------------|-------------|
-| [`server/src/services/router.ts`](server/src/services/router.ts) | Modify | SQL query in `refreshStatsCache`, `ModelStats` interface, Beta parameter guards, dashboard display |
-| [`server/src/__tests__/services/router.test.ts`](server/src/__tests__/services/router.test.ts) | Modify | Add test cases T-1 and T-2 for outage sensitivity and safe fractional evaluation |
+| [`../../../server/src/services/router.ts`](../../../server/src/services/router.ts) | Modify | SQL query in `refreshStatsCache`, `ModelStats` interface, Beta parameter guards, dashboard display |
+| [`../../../server/src/__tests__/services/router.test.ts`](../../../server/src/__tests__/services/router.test.ts) | Modify | Add test cases T-1 and T-2 for outage sensitivity and safe fractional evaluation |
 
 ---
 

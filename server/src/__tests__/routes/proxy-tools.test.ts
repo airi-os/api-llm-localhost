@@ -887,7 +887,7 @@ describe('LongCat sticky session cooldown', () => {
     expect(status).toBe(200);
     // Cooldown should have triggered and logged the exclusion message
     expect(logSpy).toHaveBeenCalledWith(
-      expect.stringContaining('[Sticky] LongCat cooldown active')
+      expect.stringContaining('[Sticky] longcat cooldown active')
     );
     // Sticky preference is preserved — request still routes to LongCat
     expect(routedToLongcat).toBe(true);
