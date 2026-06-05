@@ -7,7 +7,7 @@ export function PoolSection({
   title,
   children,
 }: {
-  pool: PoolType
+  pool?: PoolType
   title: string
   children: ReactNode
 }) {
@@ -32,7 +32,7 @@ export function PoolSection({
         onKeyDown={handleKeyDown}
       >
         <span className="text-xs text-muted-foreground" aria-hidden="true">{isExpanded ? '▼' : '▶'}</span>
-        <PoolBadge pool={pool} />
+        {pool ? <PoolBadge pool={pool} /> : <span className="text-xs text-muted-foreground">unknown</span>}
         <h2 className="text-sm font-medium text-muted-foreground">{title}</h2>
       </div>
       {isExpanded && children}
