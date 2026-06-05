@@ -5,6 +5,7 @@
 import { initDb, getDb } from '../db/index.js';
 import { decrypt } from '../lib/crypto.js';
 import { getProvider } from '../providers/index.js';
+import type { Platform } from '@freellmapi/shared/types.js';
 
 initDb();
 const db = getDb();
@@ -40,7 +41,7 @@ for (const row of models) {
   const keyRow = keyStmt.get(row.platform) as Key | undefined;
   if (!keyRow) { results.push({ row, ok: false, ms: 0, error: 'no key' }); continue; }
   const apiKey = decrypt(keyRow.encrypted_key, keyRow.iv, keyRow.auth_tag);
-  const provider = getProvider(row.platform as any);
+  const provider = getProvider(row.platform as Platform);
   if (!provider) { results.push({ row, ok: false, ms: 0, error: 'no provider' }); continue; }
 
   const start = Date.now();
@@ -48,8 +49,9 @@ for (const row of models) {
     const res = await provider.chatCompletion(apiKey, [{ role: 'user', content: 'hi' }], row.model_id, { max_tokens: 5 });
     const reply = res.choices?.[0]?.message?.content?.slice(0, 40) ?? '';
     results.push({ row, ok: true, ms: Date.now() - start, reply });
-  } catch (err: any) {
-    results.push({ row, ok: false, ms: Date.now() - start, error: String(err?.message ?? err).slice(0, 200) });
+  } catch (err: unknown) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    results.push({ row, ok: false, ms: Date.now() - start, error: errorMsg.slice(0, 200) });
   }
 }
 

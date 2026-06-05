@@ -1,12 +1,18 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import type { Express } from 'express';
+import type { AddressInfo } from 'net';
 import { createApp } from '../../app.js';
 import { initDb, getDb, getUnifiedApiKey } from '../../db/index.js';
 import { stickySessionMap, getSessionKey, transientModelCooldowns } from '../../routes/proxy.js';
 
-async function request(app: Express, method: string, path: string, body?: any) {
+async function request(
+  app: Express,
+  method: string,
+  path: string,
+  body?: unknown
+): Promise<{ status: number; body: unknown; headers: Headers; raw: string }> {
   const server = app.listen(0);
-  const addr = server.address() as any;
+  const addr = server.address() as AddressInfo;
   const url = `http://127.0.0.1:${addr.port}${path}`;
 
   const res = await fetch(url, {
@@ -21,8 +27,12 @@ async function request(app: Express, method: string, path: string, body?: any) {
   const data = await res.text();
   server.close();
 
-  let json: any = null;
-  try { json = JSON.parse(data); } catch { /* intentionally empty */ }
+  let json: unknown = null;
+  try {
+    json = JSON.parse(data);
+  } catch {
+    /* intentionally empty */
+  }
 
   return { status: res.status, body: json, headers: res.headers, raw: data };
 }
@@ -55,12 +65,13 @@ describe('Proxy tool-calling support', () => {
 
   it('passes tools/tool_choice to provider and returns tool_calls', async () => {
     const origFetch = global.fetch;
-    let providerBody: any = null;
+    let providerBody: unknown = null;
 
     vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.includes('api.groq.com/openai/v1/chat/completions')) {
-        providerBody = JSON.parse((init as any).body);
+        if (!init?.body) throw new Error('missing body');
+        providerBody = JSON.parse(init.body as string);
         return {
           ok: true,
           json: () => Promise.resolve({
@@ -86,7 +97,7 @@ describe('Proxy tool-calling support', () => {
             }],
             usage: { prompt_tokens: 12, completion_tokens: 4, total_tokens: 16 },
           }),
-        } as any;
+        } as unknown;
       }
       return origFetch(url, init);
     });
@@ -121,14 +132,14 @@ describe('Proxy tool-calling support', () => {
     let firstModel: string | null = null;
     const seenModels: string[] = [];
 
-    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+    vi.spyOn(global, 'fetch').mockImplementation(async (url: string | URL, init?: RequestInit) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
         return origFetch(url, init);
       }
       if (!urlStr.includes('/chat/completions')) return origFetch(url, init);
 
-      const body = JSON.parse((init as any).body);
+      const body = JSON.parse(init?.body as string) as { model: string };
       seenModels.push(body.model);
 
       if (firstModel === null) {
@@ -139,7 +150,7 @@ describe('Proxy tool-calling support', () => {
           statusText: 'Bad Request',
           json: () => Promise.resolve({ error: { message: 'unsupported field' } }),
           text: () => Promise.resolve(JSON.stringify({ error: { message: 'unsupported field' } })),
-        } as any;
+        } as Response;
       }
 
       if (body.model === firstModel) {
@@ -149,7 +160,7 @@ describe('Proxy tool-calling support', () => {
           statusText: 'Bad Request',
           json: () => Promise.resolve({ error: { message: 'unsupported field' } }),
           text: () => Promise.resolve(JSON.stringify({ error: { message: 'unsupported field' } })),
-        } as any;
+        } as Response;
       }
 
       return {
@@ -166,7 +177,7 @@ describe('Proxy tool-calling support', () => {
           }],
           usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
         }),
-      } as any;
+      } as Response;
     });
 
     const { status, body } = await request(app, 'POST', '/v1/chat/completions', {
@@ -191,7 +202,7 @@ describe('Proxy tool-calling support', () => {
       }
       if (!urlStr.includes('/chat/completions')) return origFetch(url, init);
 
-      const body = JSON.parse((init as any).body);
+      const body = JSON.parse(init?.body as string);
       seenModels.push(body.model);
 
       if (firstAttempt) {
@@ -210,7 +221,7 @@ describe('Proxy tool-calling support', () => {
             }],
             usage: { prompt_tokens: 4, completion_tokens: 0, total_tokens: 4 },
           }),
-        } as any;
+        } as unknown as Response;
       }
 
       return {
@@ -227,7 +238,7 @@ describe('Proxy tool-calling support', () => {
           }],
           usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
         }),
-      } as any;
+      } as unknown as Response;
     });
 
     const { status, body } = await request(app, 'POST', '/v1/chat/completions', {
@@ -252,7 +263,8 @@ describe('Proxy tool-calling support', () => {
       }
       if (!urlStr.includes('/chat/completions')) return origFetch(url, init);
 
-      const body = JSON.parse((init as any).body);
+      if (!init?.body) throw new Error('missing body');
+      const body = JSON.parse(init.body as string) as { model: string; [key: string]: unknown };
       seenModels.push(body.model);
 
       if (firstAttempt) {
@@ -266,7 +278,7 @@ describe('Proxy tool-calling support', () => {
               controller.close();
             },
           }),
-        } as any;
+        } as Response;
       }
 
       const chunks = [
@@ -290,7 +302,7 @@ describe('Proxy tool-calling support', () => {
             controller.close();
           },
         }),
-      } as any;
+      } as Response;
     });
 
     const { status, raw } = await request(app, 'POST', '/v1/chat/completions', {
@@ -306,12 +318,13 @@ describe('Proxy tool-calling support', () => {
 
   it('accepts assistant tool_calls + tool messages in follow-up turns', async () => {
     const origFetch = global.fetch;
-    let providerBody: any = null;
+    let providerBody: unknown = null;
 
     vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.includes('api.groq.com/openai/v1/chat/completions')) {
-        providerBody = JSON.parse((init as any).body);
+        if (!init?.body) throw new Error('missing body');
+        providerBody = JSON.parse(init.body as string) as unknown;
         return {
           ok: true,
           json: () => Promise.resolve({
@@ -329,7 +342,7 @@ describe('Proxy tool-calling support', () => {
             }],
             usage: { prompt_tokens: 18, completion_tokens: 6, total_tokens: 24 },
           }),
-        } as any;
+        } as Response;
       }
       return origFetch(url, init);
     });
@@ -368,12 +381,12 @@ describe('Proxy tool-calling support', () => {
 
   it('accepts Responses API text input and returns response output_text', async () => {
     const origFetch = global.fetch;
-    let providerBody: any = null;
+    let providerBody: { messages: { role: string; content: string }[]; max_tokens?: number } | null = null;
 
-    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+    vi.spyOn(global, 'fetch').mockImplementation(async (url: RequestInfo, init?: RequestInit) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.includes('api.groq.com/openai/v1/chat/completions')) {
-        providerBody = JSON.parse((init as any).body);
+        providerBody = JSON.parse(init?.body as string) as { messages: { role: string; content: string }[]; max_tokens?: number };
         return {
           ok: true,
           json: () => Promise.resolve({
@@ -391,7 +404,7 @@ describe('Proxy tool-calling support', () => {
             }],
             usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 },
           }),
-        } as any;
+        } as unknown as Response;
       }
       return origFetch(url, init);
     });
@@ -404,11 +417,12 @@ describe('Proxy tool-calling support', () => {
     });
 
     expect(status).toBe(200);
-    expect(providerBody.messages).toEqual([
+    expect(providerBody).toBeDefined();
+    expect(providerBody!.messages).toEqual([
       { role: 'system', content: 'Answer briefly.' },
       { role: 'user', content: 'ping' },
     ]);
-    expect(providerBody.max_tokens).toBe(12);
+    expect(providerBody!.max_tokens).toBe(12);
     expect(body.object).toBe('response');
     expect(body.status).toBe('completed');
     expect(body.output_text).toBe('pong');
@@ -419,12 +433,13 @@ describe('Proxy tool-calling support', () => {
 
   it('carries Responses API context via previous_response_id', async () => {
     const origFetch = global.fetch;
-    const providerBodies: any[] = [];
+    const providerBodies: { messages: { role: string; content: string }[]; max_tokens?: number }[] = [];
 
-    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+    vi.spyOn(global, 'fetch').mockImplementation(async (url: RequestInfo, init?: RequestInit) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.includes('api.groq.com/openai/v1/chat/completions')) {
-        providerBodies.push(JSON.parse((init as any).body));
+        const parsed = JSON.parse(init?.body as string) as { messages: { role: string; content: string }[]; max_tokens?: number };
+        providerBodies.push(parsed);
         const answer = providerBodies.length === 1 ? 'first answer' : 'second answer';
         return {
           ok: true,
@@ -443,7 +458,7 @@ describe('Proxy tool-calling support', () => {
             }],
             usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 },
           }),
-        } as any;
+        } as unknown as Response;
       }
       return origFetch(url, init);
     });
@@ -471,12 +486,13 @@ describe('Proxy tool-calling support', () => {
 
   it('drops empty assistant turns from Responses history so follow-ups still route', async () => {
     const origFetch = global.fetch;
-    const providerBodies: any[] = [];
+    const providerBodies: { messages: { role: string; content: string }[]; max_tokens?: number }[] = [];
 
-    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+    vi.spyOn(global, 'fetch').mockImplementation(async (url: RequestInfo, init?: RequestInit) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.includes('api.groq.com/openai/v1/chat/completions')) {
-        providerBodies.push(JSON.parse((init as any).body));
+        const parsed = JSON.parse(init?.body as string) as { messages: { role: string; content: string }[]; max_tokens?: number };
+        providerBodies.push(parsed);
         const content = providerBodies.length === 1 ? '' : 'follow-up ok';
         return {
           ok: true,
@@ -495,11 +511,10 @@ describe('Proxy tool-calling support', () => {
             }],
             usage: { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 },
           }),
-        } as any;
+        } as unknown as Response;
       }
       return origFetch(url, init);
     });
-
     const first = await request(app, 'POST', '/v1/responses', {
       model: 'freellmapi/auto',
       input: 'remember the blank turn',
@@ -524,7 +539,7 @@ describe('Proxy tool-calling support', () => {
 
   it('streams Responses API text deltas with flat function tools', async () => {
     const origFetch = global.fetch;
-    let providerBody: any = null;
+    let providerBody: unknown = null;
 
     vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
@@ -532,7 +547,7 @@ describe('Proxy tool-calling support', () => {
         return origFetch(url, init);
       }
       if (urlStr.includes('/chat/completions')) {
-        providerBody = JSON.parse((init as any).body);
+        providerBody = JSON.parse(((init as RequestInit).body as string));
         const chunks = [
           {
             id: 'chunk-1',
@@ -559,13 +574,13 @@ describe('Proxy tool-calling support', () => {
               controller.close();
             },
           }),
-        } as any;
+        } as unknown as Response;
       }
       return origFetch(url, init);
     });
 
     const server = app.listen(0);
-    const addr = server.address() as any;
+    const addr = server.address() as { port: number };
     const res = await fetch(`http://127.0.0.1:${addr.port}/v1/responses`, {
       method: 'POST',
       headers: {
@@ -593,8 +608,10 @@ describe('Proxy tool-calling support', () => {
     server.close();
 
     expect(res.status).toBe(200);
-    expect(providerBody.stream).toBe(true);
-    expect(providerBody.tools[0]).toEqual({
+    const providerBodyObj = providerBody as Record<string, unknown>;
+    expect(providerBodyObj.stream).toBe(true);
+    const tools = providerBodyObj.tools as Array<Record<string, unknown>>;
+    expect(tools[0]).toEqual({
       type: 'function',
       function: {
         name: 'transcribe',
@@ -614,7 +631,7 @@ describe('Proxy tool-calling support', () => {
 
   it('streams Responses API function calls and accepts function outputs', async () => {
     const origFetch = global.fetch;
-    const providerBodies: any[] = [];
+    const providerBodies: unknown[] = [];
 
     vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
@@ -622,7 +639,7 @@ describe('Proxy tool-calling support', () => {
         return origFetch(url, init);
       }
       if (urlStr.includes('/chat/completions')) {
-        providerBodies.push(JSON.parse((init as any).body));
+        providerBodies.push(JSON.parse(((init as RequestInit).body as string)));
 
         if (providerBodies.length === 1) {
           const chunks = [
@@ -665,20 +682,19 @@ describe('Proxy tool-calling support', () => {
           ];
           const encoder = new TextEncoder();
           const allData = chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).concat('data: [DONE]\n\n').join('');
-          return {
-            ok: true,
-            body: new ReadableStream({
+          return new Response(
+            new ReadableStream({
               start(controller) {
                 controller.enqueue(encoder.encode(allData));
                 controller.close();
               },
             }),
-          } as any;
+            { status: 200 }
+          );
         }
 
-        return {
-          ok: true,
-          json: () => Promise.resolve({
+        return new Response(
+          JSON.stringify({
             id: 'chatcmpl-after-tool',
             object: 'chat.completion',
             created: 123,
@@ -693,13 +709,17 @@ describe('Proxy tool-calling support', () => {
             }],
             usage: { prompt_tokens: 30, completion_tokens: 4, total_tokens: 34 },
           }),
-        } as any;
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }
+        );
       }
       return origFetch(url, init);
     });
 
     const server = app.listen(0);
-    const addr = server.address() as any;
+    const addr = server.address() as AddressInfo;
     const first = await fetch(`http://127.0.0.1:${addr.port}/v1/responses`, {
       method: 'POST',
       headers: {
@@ -815,8 +835,8 @@ describe('LongCat sticky session cooldown', () => {
   });
 
   beforeEach(async () => {
-    (stickySessionMap as Map<any, any>).clear();
-    (transientModelCooldowns as Map<any, any>).clear();
+    (stickySessionMap as Map<string, { modelDbId: number; lastUsed: number }>).clear();
+    (transientModelCooldowns as Map<unknown, unknown>).clear();
     const db = getDb();
     db.prepare('DELETE FROM api_keys').run();
     db.prepare('DELETE FROM requests').run();
@@ -836,8 +856,9 @@ describe('LongCat sticky session cooldown', () => {
     // Set up sticky session on LongCat with recent lastUsed (within 3 min cooldown)
     const messages = makeMessages('cooldown active test');
     const key = getSessionKey(messages, 'balanced');
-    (stickySessionMap as Map<any, any>).set(key, {
-      modelDbId: longcatRow!.id,
+    if (!longcatRow) throw new Error('missing longcat row');
+    (stickySessionMap as Map<string, { modelDbId: number; lastUsed: number }>).set(key, {
+      modelDbId: longcatRow.id,
       lastUsed: Date.now() - 1000, // 1 second ago — within cooldown
     });
 
@@ -866,7 +887,7 @@ describe('LongCat sticky session cooldown', () => {
 
       if (urlStr.includes('longcat')) routedToLongcat = true;
 
-      const body = JSON.parse((init as any).body);
+      const body = JSON.parse(((init as RequestInit).body as string));
       return {
         ok: true,
         json: () => Promise.resolve({
@@ -881,7 +902,7 @@ describe('LongCat sticky session cooldown', () => {
           }],
           usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
         }),
-      } as any;
+      } as Response;
     });
 
     const { status } = await request(app, 'POST', '/v1/chat/completions', {
@@ -905,8 +926,9 @@ describe('LongCat sticky session cooldown', () => {
     const stickyKey = getSessionKey(stickyMessages, 'balanced');
     const longcatRow = db.prepare('SELECT id FROM models WHERE platform = ? AND enabled = 1').get('longcat') as { id: number } | undefined;
     expect(longcatRow).toBeDefined();
-    (stickySessionMap as Map<any, any>).set(stickyKey, {
-      modelDbId: longcatRow!.id,
+    if (!longcatRow) throw new Error('missing longcat row');
+    (stickySessionMap as Map<string, { modelDbId: number; lastUsed: number }>).set(stickyKey, {
+      modelDbId: longcatRow.id,
       lastUsed: Date.now() - 1000, // within cooldown
     });
 
@@ -948,7 +970,7 @@ describe('LongCat sticky session cooldown', () => {
       if (urlStr.includes('longcat')) routedProvider = 'longcat';
       else if (urlStr.includes('groq')) routedProvider = 'groq';
 
-      const body = JSON.parse((init as any).body);
+      const body = JSON.parse((init as RequestInit).body as string);
       return {
         ok: true,
         json: () => Promise.resolve({
@@ -963,7 +985,7 @@ describe('LongCat sticky session cooldown', () => {
           }],
           usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
         }),
-      } as any;
+      } as Response;
     });
 
     const { status } = await request(app, 'POST', '/v1/chat/completions', {
@@ -987,8 +1009,9 @@ describe('LongCat sticky session cooldown', () => {
     // Set up sticky session on LongCat with old lastUsed (beyond 3 min cooldown)
     const messages = makeMessages('cooldown expired test');
     const key = getSessionKey(messages, 'balanced');
-    (stickySessionMap as Map<any, any>).set(key, {
-      modelDbId: longcatRow!.id,
+    if (!longcatRow) throw new Error('missing longcat row');
+    (stickySessionMap as Map<string, unknown>).set(key, {
+      modelDbId: longcatRow.id,
       lastUsed: Date.now() - 4 * 60 * 1000, // 4 minutes ago — cooldown expired
     });
 
@@ -1017,7 +1040,7 @@ describe('LongCat sticky session cooldown', () => {
 
       if (urlStr.includes('longcat')) routedToLongcat = true;
 
-      const body = JSON.parse((init as any).body);
+      const body = JSON.parse((init as RequestInit).body as string);
       return {
         ok: true,
         json: () => Promise.resolve({
@@ -1032,7 +1055,7 @@ describe('LongCat sticky session cooldown', () => {
           }],
           usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
         }),
-      } as any;
+      } as Response;
     });
 
     const { status } = await request(app, 'POST', '/v1/chat/completions', {
@@ -1056,8 +1079,9 @@ describe('LongCat sticky session cooldown', () => {
     // Set up sticky session on Groq with recent lastUsed (would be within cooldown if LongCat)
     const messages = makeMessages('non longcat cooldown test');
     const key = getSessionKey(messages, 'balanced');
-    (stickySessionMap as Map<any, any>).set(key, {
-      modelDbId: groqRow!.id,
+    if (!groqRow) throw new Error('missing groq row');
+    (stickySessionMap as Map<string, unknown>).set(key, {
+      modelDbId: groqRow.id,
       lastUsed: Date.now() - 1000, // 1 second ago
     });
 
@@ -1081,7 +1105,7 @@ describe('LongCat sticky session cooldown', () => {
 
       if (urlStr.includes('groq')) routedToGroq = true;
 
-      const body = JSON.parse((init as any).body);
+      const body = JSON.parse((init as RequestInit).body as string);
       return {
         ok: true,
         json: () => Promise.resolve({
@@ -1096,7 +1120,7 @@ describe('LongCat sticky session cooldown', () => {
           }],
           usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
         }),
-      } as any;
+      } as Response;
     });
 
     const { status } = await request(app, 'POST', '/v1/chat/completions', {
@@ -1120,8 +1144,9 @@ describe('LongCat sticky session cooldown', () => {
     // Set up sticky session on LongCat with recent lastUsed AND LongCat banned
     const messages = makeMessages('ban precedence test');
     const key = getSessionKey(messages, 'balanced');
-    (stickySessionMap as Map<any, any>).set(key, {
-      modelDbId: longcatRow!.id,
+    if (!longcatRow) throw new Error('missing longcat row');
+    (stickySessionMap as Map<string, unknown>).set(key, {
+      modelDbId: longcatRow.id,
       lastUsed: Date.now() - 1000, // within cooldown window
       bannedPlatforms: new Set(['longcat']),
     });
@@ -1143,7 +1168,7 @@ describe('LongCat sticky session cooldown', () => {
       }
       if (!urlStr.includes('/chat/completions')) return origFetch(url, init);
 
-      const body = JSON.parse((init as any).body);
+      const body = JSON.parse((init as RequestInit).body as string);
       return {
         ok: true,
         json: () => Promise.resolve({
@@ -1158,7 +1183,7 @@ describe('LongCat sticky session cooldown', () => {
           }],
           usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
         }),
-      } as any;
+      } as Response;
     });
 
     const { status } = await request(app, 'POST', '/v1/chat/completions', {
@@ -1189,14 +1214,14 @@ describe('LongCat sticky session cooldown', () => {
     const logSpy = vi.spyOn(console, 'log');
     const origFetch = global.fetch;
 
-    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+    vi.spyOn(global, 'fetch').mockImplementation(async (url: RequestInfo, init?: RequestInit): Promise<Response> => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
         return origFetch(url, init);
       }
       if (!urlStr.includes('/chat/completions')) return origFetch(url, init);
 
-      const body = JSON.parse((init as any).body);
+      const body = JSON.parse(init?.body as string);
       return {
         ok: true,
         json: () => Promise.resolve({
@@ -1211,7 +1236,7 @@ describe('LongCat sticky session cooldown', () => {
           }],
           usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
         }),
-      } as any;
+      } as Response;
     });
 
     const { status } = await request(app, 'POST', '/v1/chat/completions', {

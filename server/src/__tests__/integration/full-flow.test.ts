@@ -3,9 +3,9 @@ import type { Express } from 'express';
 import { createApp } from '../../app.js';
 import { initDb, getDb, getUnifiedApiKey } from '../../db/index.js';
 
-async function req(app: Express, method: string, path: string, body?: any) {
+async function req(app: Express, method: string, path: string, body?: unknown): Promise<{ status: number; body: unknown; headers: Headers; raw: string }> {
   const server = app.listen(0);
-  const addr = server.address() as any;
+  const addr = server.address() as AddressInfo;
   const url = `http://127.0.0.1:${addr.port}${path}`;
 
   const res = await fetch(url, {
@@ -14,13 +14,13 @@ async function req(app: Express, method: string, path: string, body?: any) {
       ...(body ? { 'Content-Type': 'application/json' } : {}),
       ...(path.startsWith('/v1/') ? { Authorization: `Bearer ${getUnifiedApiKey()}` } : {}),
     },
-    body: body ? JSON.stringify(body) : undefined,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
   });
 
   const data = await res.text();
   server.close();
 
-  let json: any = null;
+  let json: unknown = null;
   try { json = JSON.parse(data); } catch { /* intentionally empty */ }
 
   return { status: res.status, body: json, headers: res.headers, raw: data };
@@ -88,12 +88,10 @@ describe('Full Integration Flow', () => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       // If it's calling the Groq API, return an error
       if (urlStr.includes('api.groq.com')) {
-        return {
-          ok: false,
-          status: 401,
-          statusText: 'Unauthorized',
-          json: () => Promise.resolve({ error: { message: 'Invalid API Key' } }),
-        } as any;
+        return new Response(
+          JSON.stringify({ error: { message: 'Invalid API Key' } }),
+          { status: 401, statusText: 'Unauthorized' }
+        );
       }
       // Otherwise pass through (for our test server)
       return origFetch(url, init);
@@ -138,7 +136,7 @@ describe('Full Integration Flow', () => {
       platform: 'groq', key: 'gsk_delete_test', label: 'delete-test',
     });
     const { body: keys } = await req(app, 'GET', '/api/keys');
-    const target = keys.find((k: any) => k.label === 'delete-test');
+    const target = keys.find((k: { label: string }) => k.label === 'delete-test');
     expect(target).toBeDefined();
 
     const { status } = await req(app, 'DELETE', `/api/keys/${target.id}`);

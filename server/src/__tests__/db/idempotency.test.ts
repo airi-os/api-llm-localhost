@@ -81,7 +81,7 @@ describe('Migration idempotency', () => {
 
     const platforms = (db.prepare(
       `SELECT DISTINCT platform FROM models WHERE enabled = 1`
-    ).all() as { platform: any }[]).map(r => r.platform);
+    ).all() as { platform: string }[]).map(r => r.platform);
 
     const missing = platforms.filter(p => !hasProvider(p));
     expect(missing).toEqual([]);

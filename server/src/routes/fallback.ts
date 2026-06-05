@@ -21,6 +21,21 @@ function getModelPool(platform: string, modelId: string): ModelPool {
   return ModelPool.Balanced;
 }
 
+// Define the type for rows returned from the fallback_config query
+type FallbackRow = {
+  model_db_id: number;
+  priority: number;
+  enabled: number;
+  platform: string;
+  model_id: string;
+  display_name: string;
+  intelligence_rank: number;
+  speed_rank: number;
+  rpm_limit: number;
+  rpd_limit: number;
+  monthly_token_budget: number;
+};
+
 fallbackRouter.get('/', (_req: Request, res: Response) => {
   const db = getDb();
   refreshStatsCache(db, true);
@@ -30,7 +45,7 @@ fallbackRouter.get('/', (_req: Request, res: Response) => {
            m.rpm_limit, m.rpd_limit, m.monthly_token_budget
     FROM fallback_config fc
     JOIN models m ON m.id = fc.model_db_id AND m.enabled = 1
-  `).all() as any[];
+  `).all() as FallbackRow[];
 
   const keyCounts = db.prepare(`
     SELECT platform, COUNT(*) as count

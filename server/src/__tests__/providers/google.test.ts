@@ -29,7 +29,7 @@ describe('GoogleProvider', () => {
     vi.spyOn(global, 'fetch').mockResolvedValueOnce({
       ok: true,
       json: () => Promise.resolve(mockResponse),
-    } as any);
+    } as Response);
 
     const result = await provider.chatCompletion(
       'test-key',
@@ -51,7 +51,7 @@ describe('GoogleProvider', () => {
       status: 429,
       statusText: 'Too Many Requests',
       json: () => Promise.resolve({ error: { message: 'Rate limit exceeded' } }),
-    } as any);
+    } as unknown as Response);
 
     await expect(
       provider.chatCompletion('test-key', [{ role: 'user', content: 'Hi' }], 'gemini-2.5-pro')
@@ -59,24 +59,24 @@ describe('GoogleProvider', () => {
   });
 
   it('should validate key via models endpoint', async () => {
-    vi.spyOn(global, 'fetch').mockResolvedValueOnce({ ok: true } as any);
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce(new Response(null, { status: 200 }));
     expect(await provider.validateKey('valid-key')).toBe(true);
 
-    vi.spyOn(global, 'fetch').mockResolvedValueOnce({ ok: false, status: 401 } as any);
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce(new Response(null, { status: 401 }));
     expect(await provider.validateKey('invalid-key')).toBe(false);
   });
 
   it('should translate system messages to systemInstruction', async () => {
-    let capturedBody: any;
-    vi.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
-      capturedBody = JSON.parse((init as any).body);
+    let capturedBody: { systemInstruction: { parts: { text: string }[] }; contents: { role: string; content: string }[] };
+    vi.spyOn(global, 'fetch').mockImplementation(async (_url: string, init: RequestInit) => {
+      capturedBody = JSON.parse(init.body as string);
       return {
         ok: true,
         json: () => Promise.resolve({
           candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
           usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
         }),
-      } as any;
+      } as unknown as Response;
     });
 
     await provider.chatCompletion(
@@ -94,16 +94,20 @@ describe('GoogleProvider', () => {
   });
 
   it('should translate OpenAI tools/tool_choice to Gemini tools/toolConfig', async () => {
-    let capturedBody: any;
+    interface CapturedBody {
+      tools: { functionDeclarations: { name: string }[] }[];
+      toolConfig: { functionCallingConfig: { mode: string; allowedFunctionNames: string[] } };
+    }
+    let capturedBody: CapturedBody;
     vi.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
-      capturedBody = JSON.parse((init as any).body);
+      capturedBody = JSON.parse((init as RequestInit).body as string) as CapturedBody;
       return {
         ok: true,
         json: () => Promise.resolve({
           candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
           usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
         }),
-      } as any;
+      } as Response;
     });
 
     await provider.chatCompletion(
@@ -157,7 +161,7 @@ describe('GoogleProvider', () => {
           totalTokenCount: 15,
         },
       }),
-    } as any);
+    } as unknown as Response);
 
     const result = await provider.chatCompletion(
       'test-key',
@@ -173,9 +177,9 @@ describe('GoogleProvider', () => {
   });
 
   it('should preserve and pass through thought_signature', async () => {
-    let capturedBody: any;
+    let capturedBody: unknown;
     vi.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
-      capturedBody = JSON.parse((init as any).body);
+      capturedBody = JSON.parse((init as RequestInit).body as string);
       return {
         ok: true,
         json: () => Promise.resolve({
@@ -194,7 +198,7 @@ describe('GoogleProvider', () => {
           }],
           usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
         }),
-      } as any;
+      } as unknown as Response;
     });
 
     // 1. Check extraction
@@ -226,7 +230,7 @@ describe('GoogleProvider', () => {
       'gemini-2.5-pro',
     );
 
-    const assistantEntry = capturedBody.contents.find((c: any) => c.role === 'model');
+    const assistantEntry = (capturedBody.contents as { role: string }[]).find((c) => c.role === 'model');
     expect(assistantEntry.parts[0].thoughtSignature).toBe('sig_123');
     expect(assistantEntry.parts[0].functionCall.name).toBe('get_weather');
   });
@@ -234,7 +238,7 @@ describe('GoogleProvider', () => {
   // ── Streaming ──────────────────────────────────────────────────────────────
   // Build a Response-shaped object backed by a ReadableStream so the provider's
   // `res.body.getReader()` path executes for real (Node 20+ has both globally).
-  function sseResponse(frames: string[]): any {
+  function sseResponse(frames: string[]): { ok: boolean; body: ReadableStream<Uint8Array> } {
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         const encoder = new TextEncoder();

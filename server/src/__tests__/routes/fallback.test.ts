@@ -1,12 +1,13 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { ModelPool } from '@freellmapi/shared/types.js';
 import type { Express } from 'express';
+import type { AddressInfo } from 'net';
 import { createApp } from '../../app.js';
 import { initDb } from '../../db/index.js';
 
-async function request(app: Express, method: string, path: string, body?: any) {
+async function request(app: Express, method: string, path: string, body?: unknown): Promise<{ status: number; body: unknown }> {
   const server = app.listen(0);
-  const addr = server.address() as any;
+  const addr = server.address() as AddressInfo;
   const url = `http://127.0.0.1:${addr.port}${path}`;
 
   const res = await fetch(url, {
@@ -15,7 +16,7 @@ async function request(app: Express, method: string, path: string, body?: any) {
     body: body ? JSON.stringify(body) : undefined,
   });
 
-  const data = await res.json().catch(() => null);
+  const data: unknown = await res.json().catch(() => null);
   server.close();
   return { status: res.status, body: data };
 }
@@ -65,7 +66,7 @@ describe('Fallback API', () => {
     const { body: original } = await request(app, 'GET', '/api/fallback');
 
     // Reverse the order
-    const reversed = original.map((e: any, i: number) => ({
+    const reversed = original.map((e: {modelDbId: number; enabled: boolean}, i: number) => ({
       modelDbId: e.modelDbId,
       priority: original.length - i,
       enabled: e.enabled,
@@ -79,7 +80,7 @@ describe('Fallback API', () => {
     expect(after[0].modelDbId).toBe(original[original.length - 1].modelDbId);
 
     // Restore original order
-    const restore = original.map((e: any, i: number) => ({
+    const restore = original.map((e: { modelDbId: number; enabled: boolean }, i: number) => ({
       modelDbId: e.modelDbId,
       priority: i + 1,
       enabled: e.enabled,

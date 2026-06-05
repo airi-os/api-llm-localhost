@@ -2,6 +2,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { getDb } from '../db/index.js';
 import { hasProvider } from '../providers/index.js';
+import type { Platform } from '@freellmapi/shared/types.js';
 
 export const modelsRouter: Router = Router();
 
@@ -13,7 +14,24 @@ modelsRouter.get('/', (_req: Request, res: Response) => {
     FROM models m
     LEFT JOIN fallback_config fc ON fc.model_db_id = m.id
     ORDER BY COALESCE(fc.priority, m.intelligence_rank) ASC
-  `).all() as any[];
+  `).all() as {
+    id: number;
+    platform: string;
+    model_id: string;
+    display_name: string;
+    intelligence_rank: number;
+    speed_rank: number;
+    size_label: string;
+    rpm_limit: number;
+    rpd_limit: number;
+    tpm_limit: number;
+    tpd_limit: number;
+    monthly_token_budget: number;
+    context_window: number;
+    enabled: number;
+    priority: number | null;
+    fallback_enabled: number | null;
+  }[];
 
   // Count keys per platform
   const keyCounts = db.prepare(`
@@ -42,7 +60,7 @@ modelsRouter.get('/', (_req: Request, res: Response) => {
     enabled: m.enabled === 1,
     priority: m.priority,
     fallbackEnabled: m.fallback_enabled === 1,
-    hasProvider: hasProvider(m.platform),
+    hasProvider: hasProvider(m.platform as Platform),
     keyCount: keyCountMap.get(m.platform) ?? 0,
   }));
 

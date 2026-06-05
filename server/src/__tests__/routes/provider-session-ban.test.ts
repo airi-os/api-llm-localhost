@@ -14,8 +14,8 @@ import {
   stickySessionMap,
 } from '../../routes/proxy.js';
 
-function clearStickyMap() {
-  (stickySessionMap as Map<any, any>).clear();
+function clearStickyMap(): void {
+  (stickySessionMap as Map<unknown, unknown>).clear();
 }
 
 describe('Provider session ban functionality', () => {
@@ -54,14 +54,14 @@ describe('Provider session ban functionality', () => {
     it('returns false when sticky session exists but no bannedPlatforms', () => {
       const messages = makeMessages('Hello');
       const key = getSessionKey(messages, 'smart');
-      (stickySessionMap as Map<any, any>).set(key, { modelDbId: 1, lastUsed: Date.now() });
+      (stickySessionMap as Map<string, { modelDbId: number; lastUsed: number }>).set(key, { modelDbId: 1, lastUsed: Date.now() });
       expect(isSessionBannedFromPlatform(messages, 'smart', 'longcat')).toBe(false);
     });
 
     it('returns true when the platform is in bannedPlatforms', () => {
       const messages = makeMessages('Hello');
       const key = getSessionKey(messages, 'smart');
-      (stickySessionMap as Map<any, any>).set(key, {
+      (stickySessionMap as Map<string, {modelDbId: number; lastUsed: number; bannedPlatforms: Set<string>}>).set(key, {
         modelDbId: 1,
         lastUsed: Date.now(),
         bannedPlatforms: new Set(['longcat']),
@@ -72,7 +72,7 @@ describe('Provider session ban functionality', () => {
     it('returns false when a different platform is banned', () => {
       const messages = makeMessages('Hello');
       const key = getSessionKey(messages, 'smart');
-      (stickySessionMap as Map<any, any>).set(key, {
+      (stickySessionMap as Map<string, { modelDbId: number; lastUsed: number; bannedPlatforms: Set<string>; }>).set(key, {
         modelDbId: 1,
         lastUsed: Date.now(),
         bannedPlatforms: new Set(['groq']),
@@ -83,10 +83,10 @@ describe('Provider session ban functionality', () => {
     it('returns false when the sticky session has expired (past TTL)', () => {
       const messages = makeMessages('Hello');
       const key = getSessionKey(messages, 'smart');
-      (stickySessionMap as Map<any, any>).set(key, {
+      (stickySessionMap as Map<string, { modelDbId: number; lastUsed: number; bannedPlatforms: Set<string> }>).set(key, {
         modelDbId: 1,
         lastUsed: Date.now() - (31 * 60 * 1000), // 31 minutes ago
-        bannedPlatforms: new Set(['longcat']),
+        bannedPlatforms: new Set<string>(['longcat']),
       });
       expect(isSessionBannedFromPlatform(messages, 'smart', 'longcat')).toBe(false);
     });
@@ -116,13 +116,16 @@ describe('Provider session ban functionality', () => {
     it('adds to existing bannedPlatforms if entry already exists', () => {
       const messages = makeMessages('Hello');
       const key = getSessionKey(messages, 'smart');
-      (stickySessionMap as Map<any, any>).set(key, {
-        modelDbId: 2,
-        lastUsed: Date.now(),
-        bannedPlatforms: new Set(['groq']),
-      });
+      (stickySessionMap as Map<string, {modelDbId: number; lastUsed: number; bannedPlatforms: Set<string>}>)
+        .set(key, {
+          modelDbId: 2,
+          lastUsed: Date.now(),
+          bannedPlatforms: new Set(['groq']),
+        });
       banPlatformFromSession(messages, 'smart', 'longcat');
-      const entry = stickySessionMap.get(key);
+      const entry = stickySessionMap.get(
+        key,
+      ) as {modelDbId: number; lastUsed: number; bannedPlatforms: Set<string>};
       expect(entry.bannedPlatforms.has('groq')).toBe(true);
       expect(entry.bannedPlatforms.has('longcat')).toBe(true);
     });
@@ -130,7 +133,7 @@ describe('Provider session ban functionality', () => {
     it('does not duplicate platforms already banned', () => {
       const messages = makeMessages('Hello');
       const key = getSessionKey(messages, 'smart');
-      (stickySessionMap as Map<any, any>).set(key, {
+      (stickySessionMap as Map<string, { modelDbId: number; lastUsed: number; bannedPlatforms: Set<string>; }>).set(key, {
         modelDbId: 3,
         lastUsed: Date.now(),
         bannedPlatforms: new Set(['longcat']),
@@ -144,7 +147,7 @@ describe('Provider session ban functionality', () => {
     it('preserves existing modelDbId and keyId when banning', () => {
       const messages = makeMessages('Hello');
       const key = getSessionKey(messages, 'smart');
-      (stickySessionMap as Map<any, any>).set(key, {
+      (stickySessionMap as Map<string, { modelDbId: number; keyId: number; lastUsed: number }>).set(key, {
         modelDbId: 42,
         keyId: 7,
         lastUsed: Date.now(),
@@ -159,7 +162,7 @@ describe('Provider session ban functionality', () => {
       const messages = makeMessages('Hello');
       const key = getSessionKey(messages, 'smart');
       const oldTime = Date.now() - (20 * 60 * 1000); // 20 minutes ago
-      (stickySessionMap as Map<any, any>).set(key, {
+      (stickySessionMap as Map<string, {modelDbId: number; lastUsed: number}>).set(key, {
         modelDbId: 1,
         lastUsed: oldTime,
       });
@@ -175,7 +178,7 @@ describe('Provider session ban functionality', () => {
       const skipModels = new Set<number>();
       addProviderModelsToSkipModels(skipModels, 'longcat');
       const db = getDb();
-      const longcatRows = db.prepare("SELECT id FROM models WHERE platform = 'longcat' AND enabled = 1").all() as any[];
+      const longcatRows = db.prepare("SELECT id FROM models WHERE platform = 'longcat' AND enabled = 1").all() as { id: number }[];
       expect(longcatRows.length).toBeGreaterThan(0);
       const ids = longcatRows.map(r => r.id);
       ids.forEach(id => expect(skipModels.has(id)).toBe(true));
@@ -185,7 +188,7 @@ describe('Provider session ban functionality', () => {
       const skipModels = new Set<number>();
       addProviderModelsToSkipModels(skipModels, 'longcat');
       const db = getDb();
-      const otherRows = db.prepare("SELECT id FROM models WHERE platform != 'longcat' AND enabled = 1").all() as any[];
+      const otherRows = db.prepare("SELECT id FROM models WHERE platform != 'longcat' AND enabled = 1").all() as { id: number }[];
       otherRows.forEach(r => expect(skipModels.has(r.id)).toBe(false));
     });
 
@@ -208,7 +211,7 @@ describe('Provider session ban functionality', () => {
     it('runs without error when sticky session exists', () => {
       const messages = makeMessages('Hello');
       const key = getSessionKey(messages, 'smart');
-      (stickySessionMap as Map<any, any>).set(key, { modelDbId: 1, lastUsed: Date.now() });
+      (stickySessionMap as Map<string, { modelDbId: number; lastUsed: number }>).set(key, { modelDbId: 1, lastUsed: Date.now() });
       expect(() => resetAllConsecutiveFailures(messages, 'smart')).not.toThrow();
     });
 
@@ -220,7 +223,7 @@ describe('Provider session ban functionality', () => {
     it('preserves sticky entry when called', () => {
       const messages = makeMessages('Hello');
       const key = getSessionKey(messages, 'smart');
-      (stickySessionMap as Map<any, any>).set(key, {
+      (stickySessionMap as Map<string, { modelDbId: number; lastUsed: number; bannedPlatforms: Set<string> }>).set(key, {
         modelDbId: 1,
         lastUsed: Date.now(),
         bannedPlatforms: new Set(['groq']),
@@ -278,7 +281,7 @@ describe('Provider session ban functionality', () => {
       const messages = makeMessages('Hello');
       const key = getSessionKey(messages, 'smart');
       const db = getDb();
-      const longcatRow = db.prepare("SELECT id FROM models WHERE platform = 'longcat' AND enabled = 1").get() as any;
+      const longcatRow = db.prepare("SELECT id FROM models WHERE platform = 'longcat' AND enabled = 1").get() as { id: number };
       expect(longcatRow).toBeDefined();
       setStickyModel(messages, longcatRow.id, 'smart');
       // Ban longcat for this session
@@ -297,7 +300,7 @@ describe('Provider session ban functionality', () => {
     it('ban check and skipModels work together to prevent banned platform selection', () => {
       const messages = makeMessages('Hello');
       const db = getDb();
-      const longcatRow = db.prepare("SELECT id FROM models WHERE platform = 'longcat' AND enabled = 1").get() as any;
+      const longcatRow = db.prepare("SELECT id FROM models WHERE platform = 'longcat' AND enabled = 1").get() as { id: number };
       expect(longcatRow).toBeDefined();
       // Set sticky model to a longcat model
       setStickyModel(messages, longcatRow.id, 'smart');
@@ -316,7 +319,7 @@ describe('Provider session ban functionality', () => {
     it('ban via banPlatformFromSession makes isSessionBannedFromPlatform return true', () => {
       const messages = makeMessages('Hello');
       const db = getDb();
-      const longcatRow = db.prepare("SELECT id FROM models WHERE platform = 'longcat' AND enabled = 1").get() as any;
+      const longcatRow = db.prepare("SELECT id FROM models WHERE platform = 'longcat' AND enabled = 1").get() as { id: number };
       expect(longcatRow).toBeDefined();
       // Initially not banned
       expect(isSessionBannedFromPlatform(messages, 'smart', 'longcat')).toBe(false);
@@ -330,7 +333,7 @@ describe('Provider session ban functionality', () => {
       const messages = makeMessages('Hello');
       const key = getSessionKey(messages, 'smart');
       // Create a sticky entry
-      (stickySessionMap as Map<any, any>).set(key, { modelDbId: 1, lastUsed: Date.now() });
+      (stickySessionMap as Map<string, { modelDbId: number; lastUsed: number }>).set(key, { modelDbId: 1, lastUsed: Date.now() });
       // Simulate success path calling resetAllConsecutiveFailures
       expect(() => resetAllConsecutiveFailures(messages, 'smart')).not.toThrow();
       // Entry should still exist (resetAllConsecutiveFailures is a no-op)
@@ -340,7 +343,7 @@ describe('Provider session ban functionality', () => {
     it('ban from provider A does not affect provider B', () => {
       const messages = makeMessages('Hello');
       const key = getSessionKey(messages, 'smart');
-      (stickySessionMap as Map<any, any>).set(key, {
+      (stickySessionMap as Map<string, {modelDbId: number; lastUsed: number}>).set(key, {
         modelDbId: 1,
         lastUsed: Date.now(),
       });
@@ -357,7 +360,7 @@ describe('Provider session ban functionality', () => {
     it('truncated response from any provider triggers ban via banPlatformFromSession', () => {
       const messages = makeMessages('Hello');
       const db = getDb();
-      const longcatRow = db.prepare("SELECT id FROM models WHERE platform = 'longcat' AND enabled = 1").get() as any;
+      const longcatRow = db.prepare("SELECT id FROM models WHERE platform = 'longcat' AND enabled = 1").get() as { id: number };
       expect(longcatRow).toBeDefined();
       // Simulate truncation detection calling banPlatformFromSession
       banPlatformFromSession(messages, 'smart', 'longcat', longcatRow.id);
@@ -387,7 +390,7 @@ describe('Provider session ban functionality', () => {
       // Set up a sticky entry under smart mode for the same messages
       const smartKey = getSessionKey(messages, 'smart');
       expect(smartKey).not.toBe('');
-      (stickySessionMap as Map<any, any>).set(smartKey, {
+      (stickySessionMap as Map<string, { modelDbId: number; lastUsed: number }>).set(smartKey, {
         modelDbId: 42,
         lastUsed: Date.now(),
       });

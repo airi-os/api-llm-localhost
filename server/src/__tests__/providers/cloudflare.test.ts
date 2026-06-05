@@ -14,14 +14,27 @@ describe('CloudflareProvider', () => {
   });
 
   it('should parse account_id:token key format', async () => {
+    interface CapturedBody {
+      id: string;
+      object: string;
+      created: number;
+      model: string;
+      choices: Array<{
+        index: number;
+        message: { role: string; content: string };
+        finish_reason: string;
+      }>;
+      usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+    }
+
     let capturedUrl = '';
     let capturedHeaders: Record<string, string> = {};
-    let capturedBody: any = null;
+    let capturedBody: CapturedBody | null = null;
 
-    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
-      capturedUrl = url as string;
-      capturedHeaders = (init as any).headers;
-      capturedBody = JSON.parse((init as any).body);
+    vi.spyOn(global, 'fetch').mockImplementation(async (url: string, init?: RequestInit): Promise<Response> => {
+      capturedUrl = url;
+      capturedHeaders = (init?.headers as Record<string, string>) ?? {};
+      capturedBody = JSON.parse(init?.body as string) as CapturedBody;
       return {
         ok: true,
         json: () => Promise.resolve({
@@ -32,7 +45,7 @@ describe('CloudflareProvider', () => {
           choices: [{ index: 0, message: { role: 'assistant', content: 'Hello from CF!' }, finish_reason: 'stop' }],
           usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
         }),
-      } as any;
+      } as unknown as Response;
     });
 
     const result = await provider.chatCompletion(
@@ -44,7 +57,8 @@ describe('CloudflareProvider', () => {
     expect(capturedUrl).toContain('abc123');
     expect(capturedUrl).toContain('/ai/v1/chat/completions');
     expect(capturedHeaders['Authorization']).toBe('Bearer my-token-here');
-    expect(capturedBody.model).toBe('@cf/meta/llama-3.1-70b-instruct');
+    expect(capturedBody).toBeDefined();
+    expect(capturedBody!.model).toBe('@cf/meta/llama-3.1-70b-instruct');
     expect(result.choices[0].message.content).toBe('Hello from CF!');
   });
 
@@ -55,9 +69,9 @@ describe('CloudflareProvider', () => {
   });
 
   it('should convert null assistant content to empty string (CF rejects null)', async () => {
-    let capturedBody: any = null;
-    vi.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
-      capturedBody = JSON.parse((init as any).body);
+    let capturedBody: unknown = null;
+    vi.spyOn(global, 'fetch').mockImplementation(async (_url: RequestInfo, init: RequestInit) => {
+      capturedBody = JSON.parse(init.body as string);
       return {
         ok: true,
         json: () => Promise.resolve({
@@ -68,7 +82,7 @@ describe('CloudflareProvider', () => {
           choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
           usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
         }),
-      } as any;
+      } as unknown as Response;
     });
 
     await provider.chatCompletion(
@@ -89,7 +103,18 @@ describe('CloudflareProvider', () => {
       '@cf/meta/llama-3.1-70b-instruct',
     );
 
-    expect(capturedBody.messages[1].content).toBe('');
-    expect(capturedBody.messages[1].tool_calls).toHaveLength(1);
+    const body = capturedBody as {
+      messages: Array<{
+        content: string | null;
+        tool_calls?: Array<{
+          id: string;
+          type: string;
+          function: { name: string; arguments: string };
+        }>;
+      }>;
+    };
+
+    expect(body.messages[1].content).toBe('');
+    expect(body.messages[1].tool_calls).toHaveLength(1);
   });
 });

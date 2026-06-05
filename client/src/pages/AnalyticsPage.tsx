@@ -45,7 +45,11 @@ const primaryFill = 'var(--foreground)'
 type SortKey = 'displayName' | 'platform' | 'intelligenceRank' | 'requests' | 'successRate' | 'avgLatencyMs' | 'avgTtfbMs' | 'totalInputTokens' | 'totalOutputTokens' | 'outputTokensPerSec'
 type SortDir = 'asc' | 'desc'
 
-function sortModels(rows: any[], key: SortKey, dir: SortDir) {
+function sortModels(
+  rows: Record<SortKey, string | number>[],
+  key: SortKey,
+  dir: SortDir
+): Record<SortKey, string | number>[] {
   return [...rows].sort((a, b) => {
     const av = a[key]
     const bv = b[key]
@@ -58,7 +62,7 @@ function sortModels(rows: any[], key: SortKey, dir: SortDir) {
     }
 
     const cmp = typeof av === 'string'
-      ? av.localeCompare(bv)
+      ? (av as string).localeCompare(bv as string)
       : (av as number) - (bv as number)
 
     return dir === 'asc' ? cmp : -cmp
@@ -92,30 +96,30 @@ export default function AnalyticsPage() {
 
   const { data: summary } = useQuery({
     queryKey: ['analytics', 'summary', range],
-    queryFn: () => apiFetch<any>(`/api/analytics/summary?range=${range}`),
+    queryFn: () => apiFetch<unknown>(`/api/analytics/summary?range=${range}`),
   })
 
   const { data: byPlatform = [] } = useQuery({
     queryKey: ['analytics', 'by-platform', range],
-    queryFn: () => apiFetch<any[]>(`/api/analytics/by-platform?range=${range}`),
+    queryFn: () => apiFetch<unknown[]>(`/api/analytics/by-platform?range=${range}`),
   })
 
   const { data: timeline = [] } = useQuery({
     queryKey: ['analytics', 'timeline', range],
-    queryFn: () => apiFetch<any[]>(`/api/analytics/timeline?range=${range}`),
+    queryFn: () => apiFetch<unknown[]>(`/api/analytics/timeline?range=${range}`),
   })
 
   const { data: byModel = [] } = useQuery({
     queryKey: ['analytics', 'by-model', range],
-    queryFn: () => apiFetch<any[]>(`/api/analytics/by-model?range=${range}`),
+    queryFn: () => apiFetch<unknown[]>(`/api/analytics/by-model?range=${range}`),
   })
 
   const { data: errors = [] } = useQuery({
     queryKey: ['analytics', 'errors', range],
-    queryFn: () => apiFetch<any[]>(`/api/analytics/errors?range=${range}`),
+    queryFn: () => apiFetch<unknown[]>(`/api/analytics/errors?range=${range}`),
   })
 
-  const byPlatformWithFailures = byPlatform.map((p: any) => {
+  const byPlatformWithFailures = byPlatform.map((p: { requests: number; successRate: number; [key: string]: unknown }) => {
     const failed = Math.round(p.requests * (100 - p.successRate) / 100)
     return { ...p, successRequests: p.requests - failed, failedRequests: failed }
   })
@@ -229,7 +233,7 @@ export default function AnalyticsPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {sortModels(byModel, sortKey, sortDir).map((m: any, i: number) => (
+                      {sortModels(byModel, sortKey, sortDir).map((m, i: number) => (
                         <TableRow key={i}>
                           <TableCell className="pl-4 text-sm font-medium">{m.displayName}</TableCell>
                           <TableCell className="text-xs text-muted-foreground">{m.platform}</TableCell>
@@ -264,7 +268,7 @@ export default function AnalyticsPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {errors.slice(0, 20).map((e: any) => (
+                    {errors.slice(0, 20).map((e: { id: string; platform: string; error: string; createdAt: string }) => (
                       <TableRow key={e.id}>
                         <TableCell className="pl-4 text-xs">{e.platform}</TableCell>
                         <TableCell className="text-xs max-w-[200px] truncate">{e.error}</TableCell>
