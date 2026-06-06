@@ -153,31 +153,45 @@ describe('IP Pool Capacity Manager', () => {
   describe('hasIpCapacity', () => {
     it('returns true when IP capacity is disabled', () => {
       delete process.env.PROXY_IP_COUNT;
-      expect(hasIpCapacity('google', 1)).toBe(true);
+      expect(hasIpCapacity()).toBe(true);
     });
 
     it('returns true when pool has space', () => {
       process.env.PROXY_IP_COUNT = '3';
-      expect(hasIpCapacity('google', 1)).toBe(true);
+      expect(hasIpCapacity()).toBe(true);
     });
 
     it('returns false when pool is full for normal provider', () => {
       process.env.PROXY_IP_COUNT = '1';
       allocateIp('sess-1', 'google', 1);
-      // keyId=2 → 2%1=0, same IP, should be full
-      expect(hasIpCapacity('google', 2)).toBe(false);
+      // Pool is full, no sessionKey → should return false
+      expect(hasIpCapacity()).toBe(false);
     });
 
     it('returns false when pool is full for longcat', () => {
       process.env.PROXY_IP_COUNT = '1';
       allocateIp('sess-1', 'longcat', 1);
-      expect(hasIpCapacity('longcat', 1)).toBe(false);
+      expect(hasIpCapacity()).toBe(false);
     });
 
     it('returns true when pool has space for longcat', () => {
       process.env.PROXY_IP_COUNT = '3';
       allocateIp('sess-1', 'longcat', 1);
-      expect(hasIpCapacity('longcat', 1)).toBe(true);
+      expect(hasIpCapacity()).toBe(true);
+    });
+
+    it('returns true for re-entrant session that already holds an IP even when pool is full', () => {
+      process.env.PROXY_IP_COUNT = '1';
+      allocateIp('sess-1', 'google', 1);
+      // Pool is full, but sess-1 already has an IP → should return true
+      expect(hasIpCapacity('sess-1')).toBe(true);
+    });
+
+    it('returns false for different session when pool is full', () => {
+      process.env.PROXY_IP_COUNT = '1';
+      allocateIp('sess-1', 'google', 1);
+      // Pool is full, sess-2 has no IP → should return false
+      expect(hasIpCapacity('sess-2')).toBe(false);
     });
   });
 

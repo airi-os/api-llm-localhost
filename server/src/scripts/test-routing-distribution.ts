@@ -35,7 +35,4 @@ for (const [, label] of order.entries()) {
   providerCounts.set(provider, (providerCounts.get(provider) ?? 0) + 1);
 }
 
-const sorted = [...providerCounts.entries()].sort((a, b) => b[1] - a[1]);
-// Distribution summary available via sorted array
-
-const topProvider = order[0]?.split('/')[0];
+// Distribution summary available via providerCounts map

@@ -1276,8 +1276,10 @@ async function handleChatCompletion(
   let lastError: unknown = null;
 
   // IP capacity check: if the global IP pool is at capacity,
-  // clear the sticky preference so the bandit can route elsewhere
-  if (preferredModel && !hasIpCapacity()) {
+  // clear the sticky preference so the bandit can route elsewhere.
+  // Pass sessionKey so re-entrant sessions that already hold an IP
+  // are not penalised (they won't consume a new slot).
+  if (preferredModel && !hasIpCapacity(sessionKey)) {
     preferredModel = undefined;
     preferredKeyId = undefined;
   }
@@ -1791,7 +1793,7 @@ async function handleChatCompletion(
                if (preferredModel === route.modelDbId) {
                  const db = getDb();
                  const keys = db.prepare(
-                   'SELECT * FROM api_keys WHERE platform = ? AND enabled = 1 AND status != ?'
+                   'SELECT * FROM api_keys WHERE platform = ? AND enabled = 1 AND (status != ? OR status IS NULL)'
                  ).all(route.platform, 'invalid') as Array<{ id: number; rpm: number | null; rpd: number | null; tpm: number | null; tpd: number | null }>;
 
                  const hasValidKeys = keys.some(key => !isOnCooldown(route.platform, route.modelId, key.id));

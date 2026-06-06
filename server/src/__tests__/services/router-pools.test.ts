@@ -206,10 +206,7 @@ describe('Router Pool-Based Routing', () => {
     `).run();
 
     // Mock ratelimit: LongCat exhausted, Google available
-    canMakeRequest.mockImplementation((platform: string) => {
-           if (platform === 'longcat') return false;
-           return true;
-         });
+    canMakeRequest.mockImplementation((platform: string) => platform !== 'longcat');
          canUseTokens.mockReturnValue(true);
 
     // Call routeRequest in smart mode - should fail since smart mode doesn't borrow

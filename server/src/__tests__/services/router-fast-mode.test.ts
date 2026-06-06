@@ -155,10 +155,7 @@ describe('Router Fast Mode', () => {
     // Mock rate limit to fail for fast pool models only
     canMakeRequest.mockImplementation((platform, modelId) => {
       // Block fast pool models, allow balanced pool models
-      if (modelId === 'openai-fast' || modelId === 'google-fast' || modelId === 'claude-3-5-haiku') {
-        return false;
-      }
-      return true;
+      return !(modelId === 'openai-fast' || modelId === 'google-fast' || modelId === 'claude-3-5-haiku');
     });
 
     const result = routeRequest(100, undefined, undefined, 'fast');

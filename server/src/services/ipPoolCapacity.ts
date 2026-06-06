@@ -161,11 +161,17 @@ export function releaseIp(sessionKey: string): void {
  * Check whether there is IP capacity available in the global pool.
  * Returns true when PROXY_IP_COUNT is unset (no limit).
  *
+ * When a sessionKey is provided, returns true if the session already holds
+ * an IP allocation (re-entrant: it won't consume a *new* slot).
+ *
  * Note: This checks global pool occupancy (any platform), consistent with
  * allocateIp which treats all occupied slots as unavailable.
  */
-export function hasIpCapacity(): boolean {
+export function hasIpCapacity(sessionKey?: string): boolean {
   if (!isIpCapacityEnabled()) return true;
+
+  // Re-entrant: if this session already has an IP, it can keep its preference
+  if (sessionKey && sessionIpMap.has(sessionKey)) return true;
 
   const ipCount = getIpCount();
   const now = Date.now();
