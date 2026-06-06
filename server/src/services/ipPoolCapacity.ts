@@ -65,7 +65,10 @@ export function allocateIp(
   keyId: number,
   ttlMs = DEFAULT_TTL_MS,
 ): number {
-  if (!isIpCapacityEnabled()) return -1;
+  // When capacity management is disabled, return a sentinel success value.
+  // Callers check `=== -1` to mean "pool full"; returning -1 here would
+  // incorrectly clear sticky preferences when there is no real capacity issue.
+  if (!isIpCapacityEnabled()) return 0;
 
   const ipCount = getIpCount();
   const now = Date.now();
