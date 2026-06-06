@@ -1,0 +1,3 @@
+[submodule "llm-proxy"]
+	path = llm-proxy
+	url = https://github.com/vi70x4/llm-proxy.git

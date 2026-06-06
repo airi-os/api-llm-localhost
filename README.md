@@ -134,6 +134,24 @@ For production, set `ADMIN_DASHBOARD_KEY` in `.env` and keep it private. The das
 | `DISABLE_HSTS` | No | Set `true` to skip HSTS headers — useful when terminating TLS at a reverse proxy. |
 | `LOG_SENSITIVE_DATA` | No | Set `true` to log full request/response bodies. Off by default; never enable in production. |
 | `PORT` | No | Server port (default `3001`). |
+| `LLM_PROXY_URL` | No | Base URL of the llm-proxy router (e.g. `https://router.example.com`). Enables automatic proxy topology discovery at startup. If unset, `PROXY_IP_COUNT` is used as a static fallback. |
+| `INTERNAL_AUTH_SECRET` | No | Must match llm-proxy's `INTERNAL_AUTH_SECRET`. Required for topology discovery when `LLM_PROXY_URL` is set. |
+| `PROXY_IP_COUNT` | No | Static fallback for the number of proxy workers when topology discovery is unavailable. Defaults to `0` (IP capacity disabled). |
+
+## Proxy Topology Discovery
+
+When `LLM_PROXY_URL` is set, freellmapi-alpha fetches the proxy topology from llm-proxy at startup:
+
+```
+GET /internal/v1/topology
+Header: X-Internal-Auth: <INTERNAL_AUTH_SECRET>
+```
+
+This returns the deployed worker count and proxy list, eliminating the need to manually synchronize `PROXY_IP_COUNT`. The topology is deploy-authoritative — generated once during `npm run deploy` and served as an immutable constant.
+
+**Fallback chain:** dynamic topology → `PROXY_IP_COUNT` env → `0` (disabled)
+
+Existing deployments without `LLM_PROXY_URL` continue to work exactly as before.
 
 ## Using the API
 

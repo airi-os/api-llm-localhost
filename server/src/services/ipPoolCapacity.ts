@@ -12,6 +12,8 @@
 //
 // In-memory only, following the same pattern as ratelimit.ts.
 
+import { getWorkerCount as getTopologyWorkerCount, isDynamicTopologyAvailable } from "./proxyTopology.js";
+
 interface IpAllocation {
   sessionKey: string;
   platform: string;
@@ -33,18 +35,35 @@ const DEFAULT_TTL_MS = 30 * 60 * 1000; // matches STICKY_TTL_MS
 // ---------------------------------------------------------------------------
 
 /**
- * Returns the configured number of proxy IPs.
- * Reads PROXY_IP_COUNT from env. Returns 0 when unset, 0, or invalid.
+ * Returns the configured number of proxy workers.
+ *
+ * Fallback chain:
+ *   1. Dynamic topology (if available at startup)
+ *   2. PROXY_IP_COUNT env var (backward compatibility)
+ *   0. 0 (disabled)
+ *
+ * Uses isDynamicTopologyAvailable() rather than count > 0 because a
+ * zero-worker topology is still dynamically available (intentionally
+ * disables IP capacity limits).
  */
-export function getIpCount(): number {
+export function getWorkerCount(): number {
+  if (isDynamicTopologyAvailable()) {
+    return getTopologyWorkerCount();
+  }
+
   const raw = process.env.PROXY_IP_COUNT;
   const count = raw ? parseInt(raw, 10) : 0;
   return Number.isInteger(count) && count > 0 ? count : 0;
 }
 
+/** @deprecated Use getWorkerCount() instead. */
+export function getIpCount(): number {
+  return getWorkerCount();
+}
+
 /** True when PROXY_IP_COUNT is set to a positive integer. */
 export function isIpCapacityEnabled(): boolean {
-  return getIpCount() > 0;
+  return getWorkerCount() > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -70,7 +89,7 @@ export function allocateIp(
   // incorrectly clear sticky preferences when there is no real capacity issue.
   if (!isIpCapacityEnabled()) return 0;
 
-  const ipCount = getIpCount();
+  const ipCount = getWorkerCount();
   const now = Date.now();
 
   // Re-entrant: session already has an IP
@@ -188,7 +207,7 @@ export function hasIpCapacity(sessionKey?: string): boolean {
     }
   }
 
-  const ipCount = getIpCount();
+  const ipCount = getWorkerCount();
   const now = Date.now();
 
   // Check if any IP slot is free (expired or unallocated)
@@ -209,7 +228,7 @@ export function hasIpCapacity(sessionKey?: string): boolean {
 export function getIpCapacityStatus(platform: string): { used: number; max: number } {
   if (!isIpCapacityEnabled()) return { used: 0, max: 0 };
 
-  const ipCount = getIpCount();
+  const ipCount = getWorkerCount();
   const now = Date.now();
   let used = 0;
   for (const [, alloc] of ipPool) {
