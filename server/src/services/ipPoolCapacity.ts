@@ -93,6 +93,10 @@ export function allocateIp(
     for (let i = 0; i < ipCount; i++) {
       const alloc = ipPool.get(i);
       if (!alloc || alloc.expiresAt < now) {
+        // Clean up old session's mapping when overwriting expired allocation
+        if (alloc) {
+          sessionIpMap.delete(alloc.sessionKey);
+        }
         ipPool.set(i, {
           sessionKey,
           platform,
@@ -114,6 +118,10 @@ export function allocateIp(
     const candidate = (keyOffset + i) % ipCount;
     const alloc = ipPool.get(candidate);
     if (!alloc || alloc.expiresAt < now) {
+      // Clean up old session's mapping when overwriting expired allocation
+      if (alloc) {
+        sessionIpMap.delete(alloc.sessionKey);
+      }
       ipPool.set(candidate, {
         sessionKey,
         platform,
@@ -150,13 +158,13 @@ export function releaseIp(sessionKey: string): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Check whether there is IP capacity available.
+ * Check whether there is IP capacity available in the global pool.
  * Returns true when PROXY_IP_COUNT is unset (no limit).
  *
  * Note: This checks global pool occupancy (any platform), consistent with
  * allocateIp which treats all occupied slots as unavailable.
  */
-export function hasIpCapacity(platform: string, keyId: number): boolean {
+export function hasIpCapacity(): boolean {
   if (!isIpCapacityEnabled()) return true;
 
   const ipCount = getIpCount();

@@ -1275,15 +1275,11 @@ async function handleChatCompletion(
   const skipKeys = new Set<string>();
   let lastError: unknown = null;
 
-  // IP capacity check: if the sticky preferred model's platform is at IP capacity,
+  // IP capacity check: if the global IP pool is at capacity,
   // clear the sticky preference so the bandit can route elsewhere
-  if (preferredModel) {
-    const db = getDb();
-    const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel);
-    if (prefRow && !hasIpCapacity(prefRow.platform, preferredKeyId ?? 0)) {
-      preferredModel = undefined;
-      preferredKeyId = undefined;
-    }
+  if (preferredModel && !hasIpCapacity()) {
+    preferredModel = undefined;
+    preferredKeyId = undefined;
   }
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
