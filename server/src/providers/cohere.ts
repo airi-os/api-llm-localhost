@@ -33,7 +33,7 @@ export class CohereProvider extends BaseProvider {
       tool_choice: options?.tool_choice,
     };
 
-    const res = await this.fetchWithTimeout(`${API_BASE}/chat/completions`, {
+    const res = await CohereProvider.fetchWithTimeout(`${API_BASE}/chat/completions`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
@@ -79,7 +79,7 @@ export class CohereProvider extends BaseProvider {
       stream: true,
     };
 
-    const res = await this.fetchWithTimeout(`${API_BASE}/chat/completions`, {
+    const res = await CohereProvider.fetchWithTimeout(`${API_BASE}/chat/completions`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
@@ -129,7 +129,7 @@ export class CohereProvider extends BaseProvider {
   async validateKey(apiKey: string): Promise<boolean> {
     // Transport errors propagate — health.ts marks status='error' without
     // counting toward auto-disable. Only confirmed 401/403 disables a key.
-    const res = await this.fetchWithTimeout(`${API_BASE}/models`, {
+    const res = await CohereProvider.fetchWithTimeout(`${API_BASE}/models`, {
       method: 'GET',
       headers: { 'Authorization': `Bearer ${apiKey}` },
     }, 10000);

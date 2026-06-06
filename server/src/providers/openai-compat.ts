@@ -44,7 +44,7 @@ export class OpenAICompatProvider extends BaseProvider {
     modelId: string,
     options?: CompletionOptions,
   ): Promise<ChatCompletionResponse> {
-    const res = await this.fetchWithTimeout(`${this.baseUrl}/chat/completions`, {
+    const res = await OpenAICompatProvider.fetchWithTimeout(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
@@ -84,7 +84,7 @@ export class OpenAICompatProvider extends BaseProvider {
     modelId: string,
     options?: CompletionOptions,
   ): AsyncGenerator<ChatCompletionChunk> {
-    const res = await this.fetchWithTimeout(`${this.baseUrl}/chat/completions`, {
+    const res = await OpenAICompatProvider.fetchWithTimeout(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
@@ -149,7 +149,7 @@ export class OpenAICompatProvider extends BaseProvider {
     // health.ts catches them and marks status='error' WITHOUT incrementing
     // the consecutive-failure counter — only confirmed 401/403 disables a key.
     const url = this.validateUrl ?? `${this.baseUrl}/models`;
-    const res = await this.fetchWithTimeout(url, {
+    const res = await OpenAICompatProvider.fetchWithTimeout(url, {
       method: 'GET',
       headers: {
         'Authorization': `Bearer ${apiKey}`,

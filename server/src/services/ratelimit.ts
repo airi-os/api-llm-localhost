@@ -10,12 +10,12 @@ interface Window {
 const windows = new Map<string, Window>();
 
 function getWindow(key: string): Window {
-  let w = windows.get(key);
-  if (!w) {
-    w = { timestamps: [], tokenCount: 0, tokenTimestamps: [] };
-    windows.set(key, w);
+  let window = windows.get(key);
+  if (!window) {
+    window = { timestamps: [], tokenCount: 0, tokenTimestamps: [] };
+    windows.set(key, window);
   }
-  return w;
+  return window;
 }
 
 function pruneTimestamps(timestamps: number[], windowMs: number, now: number): number[] {
@@ -36,16 +36,16 @@ export function canMakeRequest(
 
   if (limits.rpm !== null) {
     const key = `${platform}:${modelId}:${keyId}:rpm`;
-    const w = getWindow(key);
-    w.timestamps = pruneTimestamps(w.timestamps, MINUTE, now);
-    if (w.timestamps.length >= limits.rpm) return false;
+    const window = getWindow(key);
+    window.timestamps = pruneTimestamps(window.timestamps, MINUTE, now);
+    if (window.timestamps.length >= limits.rpm) return false;
   }
 
   if (limits.rpd !== null) {
     const key = `${platform}:${modelId}:${keyId}:rpd`;
-    const w = getWindow(key);
-    w.timestamps = pruneTimestamps(w.timestamps, DAY, now);
-    if (w.timestamps.length >= limits.rpd) return false;
+    const window = getWindow(key);
+    window.timestamps = pruneTimestamps(window.timestamps, DAY, now);
+    if (window.timestamps.length >= limits.rpd) return false;
   }
 
   return true;
@@ -62,17 +62,17 @@ export function canUseTokens(
 
   if (limits.tpm !== null) {
     const key = `${platform}:${modelId}:${keyId}:tpm`;
-    const w = getWindow(key);
-    w.tokenTimestamps = w.tokenTimestamps.filter(t => t.ts > now - MINUTE);
-    const used = w.tokenTimestamps.reduce((sum, t) => sum + t.tokens, 0);
+    const window = getWindow(key);
+    window.tokenTimestamps = window.tokenTimestamps.filter(t => t.ts > now - MINUTE);
+    const used = window.tokenTimestamps.reduce((sum, t) => sum + t.tokens, 0);
     if (used + estimatedTokens > limits.tpm) return false;
   }
 
   if (limits.tpd !== null) {
     const key = `${platform}:${modelId}:${keyId}:tpd`;
-    const w = getWindow(key);
-    w.tokenTimestamps = w.tokenTimestamps.filter(t => t.ts > now - DAY);
-    const used = w.tokenTimestamps.reduce((sum, t) => sum + t.tokens, 0);
+    const window = getWindow(key);
+    window.tokenTimestamps = window.tokenTimestamps.filter(t => t.ts > now - DAY);
+    const used = window.tokenTimestamps.reduce((sum, t) => sum + t.tokens, 0);
     if (used + estimatedTokens > limits.tpd) return false;
   }
 

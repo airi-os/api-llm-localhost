@@ -67,7 +67,7 @@ describe('Proxy tool-calling support', () => {
     const origFetch = global.fetch;
     let providerBody: unknown = null;
 
-    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+    vi.spyOn(global, 'fetch').mockImplementation((url, init) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.includes('api.groq.com/openai/v1/chat/completions')) {
         if (!init?.body) throw new Error('missing body');
@@ -132,7 +132,7 @@ describe('Proxy tool-calling support', () => {
     let firstModel: string | null = null;
     const seenModels: string[] = [];
 
-    vi.spyOn(global, 'fetch').mockImplementation(async (url: string | URL, init?: RequestInit) => {
+    vi.spyOn(global, 'fetch').mockImplementation((url: string | URL, init?: RequestInit) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
         return origFetch(url, init);
@@ -195,7 +195,7 @@ describe('Proxy tool-calling support', () => {
     const seenModels: string[] = [];
     let firstAttempt = true;
 
-    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+    vi.spyOn(global, 'fetch').mockImplementation((url, init) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
         return origFetch(url, init);
@@ -256,7 +256,7 @@ describe('Proxy tool-calling support', () => {
     const seenModels: string[] = [];
     let firstAttempt = true;
 
-    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+    vi.spyOn(global, 'fetch').mockImplementation((url, init) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
         return origFetch(url, init);
@@ -320,7 +320,7 @@ describe('Proxy tool-calling support', () => {
     const origFetch = global.fetch;
     let providerBody: unknown = null;
 
-    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+    vi.spyOn(global, 'fetch').mockImplementation((url, init) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.includes('api.groq.com/openai/v1/chat/completions')) {
         if (!init?.body) throw new Error('missing body');
@@ -383,7 +383,7 @@ describe('Proxy tool-calling support', () => {
     const origFetch = global.fetch;
     let providerBody: { messages: { role: string; content: string }[]; max_tokens?: number } | null = null;
 
-    vi.spyOn(global, 'fetch').mockImplementation(async (url: RequestInfo, init?: RequestInit) => {
+    vi.spyOn(global, 'fetch').mockImplementation((url: RequestInfo, init?: RequestInit) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.includes('api.groq.com/openai/v1/chat/completions')) {
         providerBody = JSON.parse(init?.body as string) as { messages: { role: string; content: string }[]; max_tokens?: number };
@@ -418,11 +418,12 @@ describe('Proxy tool-calling support', () => {
 
     expect(status).toBe(200);
     expect(providerBody).toBeDefined();
-    expect(providerBody!.messages).toEqual([
+    if (providerBody === undefined) throw new Error('providerBody is undefined');
+    expect(providerBody.messages).toEqual([
       { role: 'system', content: 'Answer briefly.' },
       { role: 'user', content: 'ping' },
     ]);
-    expect(providerBody!.max_tokens).toBe(12);
+    expect(providerBody.max_tokens).toBe(12);
     expect(body.object).toBe('response');
     expect(body.status).toBe('completed');
     expect(body.output_text).toBe('pong');
@@ -435,7 +436,7 @@ describe('Proxy tool-calling support', () => {
     const origFetch = global.fetch;
     const providerBodies: { messages: { role: string; content: string }[]; max_tokens?: number }[] = [];
 
-    vi.spyOn(global, 'fetch').mockImplementation(async (url: RequestInfo, init?: RequestInit) => {
+    vi.spyOn(global, 'fetch').mockImplementation((url: RequestInfo, init?: RequestInit) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.includes('api.groq.com/openai/v1/chat/completions')) {
         const parsed = JSON.parse(init?.body as string) as { messages: { role: string; content: string }[]; max_tokens?: number };
@@ -488,7 +489,7 @@ describe('Proxy tool-calling support', () => {
     const origFetch = global.fetch;
     const providerBodies: { messages: { role: string; content: string }[]; max_tokens?: number }[] = [];
 
-    vi.spyOn(global, 'fetch').mockImplementation(async (url: RequestInfo, init?: RequestInit) => {
+    vi.spyOn(global, 'fetch').mockImplementation((url: RequestInfo, init?: RequestInit) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.includes('api.groq.com/openai/v1/chat/completions')) {
         const parsed = JSON.parse(init?.body as string) as { messages: { role: string; content: string }[]; max_tokens?: number };
@@ -541,7 +542,7 @@ describe('Proxy tool-calling support', () => {
     const origFetch = global.fetch;
     let providerBody: unknown = null;
 
-    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+    vi.spyOn(global, 'fetch').mockImplementation((url, init) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
         return origFetch(url, init);
@@ -633,7 +634,7 @@ describe('Proxy tool-calling support', () => {
     const origFetch = global.fetch;
     const providerBodies: unknown[] = [];
 
-    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+    vi.spyOn(global, 'fetch').mockImplementation((url, init) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
         return origFetch(url, init);
@@ -878,7 +879,7 @@ describe('LongCat sticky session cooldown', () => {
     const origFetch = global.fetch;
     let routedToLongcat = false;
 
-    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+    vi.spyOn(global, 'fetch').mockImplementation((url, init) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
         return origFetch(url, init);
@@ -960,7 +961,7 @@ describe('LongCat sticky session cooldown', () => {
     const origFetch = global.fetch;
     let routedProvider = '';
 
-    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+    vi.spyOn(global, 'fetch').mockImplementation((url, init) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
         return origFetch(url, init);
@@ -1031,7 +1032,7 @@ describe('LongCat sticky session cooldown', () => {
     const origFetch = global.fetch;
     let routedToLongcat = false;
 
-    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+    vi.spyOn(global, 'fetch').mockImplementation((url, init) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
         return origFetch(url, init);
@@ -1096,7 +1097,7 @@ describe('LongCat sticky session cooldown', () => {
     const origFetch = global.fetch;
     let routedToGroq = false;
 
-    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+    vi.spyOn(global, 'fetch').mockImplementation((url, init) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
         return origFetch(url, init);
@@ -1161,7 +1162,7 @@ describe('LongCat sticky session cooldown', () => {
     const logSpy = vi.spyOn(console, 'log');
     const origFetch = global.fetch;
 
-    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+    vi.spyOn(global, 'fetch').mockImplementation((url, init) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
         return origFetch(url, init);
@@ -1214,7 +1215,7 @@ describe('LongCat sticky session cooldown', () => {
     const logSpy = vi.spyOn(console, 'log');
     const origFetch = global.fetch;
 
-    vi.spyOn(global, 'fetch').mockImplementation(async (url: RequestInfo, init?: RequestInit): Promise<Response> => {
+    vi.spyOn(global, 'fetch').mockImplementation((url: RequestInfo, init?: RequestInit): Response => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
         return origFetch(url, init);

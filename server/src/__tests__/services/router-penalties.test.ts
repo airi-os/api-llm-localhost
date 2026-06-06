@@ -37,32 +37,15 @@ describe('Router Penalties', () => {
     vi.clearAllMocks();
   });
 
-  it('should apply penalty when all keys are exhausted', () => {
-    const db = getDb();
-
-    // Insert a model
-    db.prepare("INSERT INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, enabled, rpm_limit, tpm_limit) VALUES ('google', 'test-model', 'Test Model', 1, 1, 1, 1000, 100000)").run();
-    const modelId = (db.prepare("SELECT id FROM models WHERE model_id = 'test-model'").get() as { id: number }).id;
-
-    // Enable in fallback
-    db.prepare("INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, 1, 1)").run(modelId);
-
-    // Insert API key
-    db.prepare("INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled) VALUES ('google', 'Test Key', 'enc', 'iv', 'tag', 'healthy', 1)").run();
-
-    // Mock ratelimit to deny all requests
-    (ratelimit.canMakeRequest as jest.Mock).mockReturnValue(false);
-
-    // Call routeRequest and expect it to throw
-    expect(() => routeRequest(100)).toThrow(/exhausted/i);
-  });
-
   it('should not apply penalty when only some keys are exhausted', () => {
     const db = getDb();
 
     // Insert a model
     db.prepare("INSERT INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, enabled, rpm_limit, tpm_limit) VALUES ('google', 'test-model', 'Test Model', 1, 1, 1, 1000, 100000)").run();
     const modelId = (db.prepare("SELECT id FROM models WHERE model_id = 'test-model'").get() as { id: number }).id;
+
+    // Add request history for dynamic pool calculation (balanced pool: speed score 5-8)
+    db.prepare("INSERT INTO requests (model_db_id, platform, model_id, tokens_used, response_time_ms, ttfb_ms, created_at) VALUES (?, 'google', 'test-model', 100, 500, 50, datetime('now'))").run(modelId);
 
     // Enable in fallback
     db.prepare("INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, 1, 1)").run(modelId);
@@ -161,6 +144,10 @@ describe('Router Penalties', () => {
     db.prepare("INSERT INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, enabled, rpm_limit, tpm_limit) VALUES ('google', 'model-low', 'Low Priority', 2, 2, 1, 1000, 100000)").run();
     const lowId = (db.prepare("SELECT id FROM models WHERE model_id = 'model-low'").get() as { id: number }).id;
 
+    // Add request history for dynamic pool calculation (balanced pool: speed score 5-8)
+    db.prepare("INSERT INTO requests (model_db_id, platform, model_id, tokens_used, response_time_ms, ttfb_ms, created_at) VALUES (?, 'google', 'model-high', 100, 500, 50, datetime('now'))").run(highId);
+    db.prepare("INSERT INTO requests (model_db_id, platform, model_id, tokens_used, response_time_ms, ttfb_ms, created_at) VALUES (?, 'google', 'model-low', 100, 500, 50, datetime('now'))").run(lowId);
+
     // Enable both in fallback
     db.prepare("INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, 1, 1)").run(highId);
     db.prepare("INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, 2, 1)").run(lowId);
@@ -184,5 +171,29 @@ describe('Router Penalties', () => {
 
     // Assert low priority model was selected due to penalty on high
     expect(result.modelId).toBe('model-low');
+  });
+});
+
+  it('should apply penalty when all keys are exhausted', () => {
+    const db = getDb();
+
+    // Insert a model
+    db.prepare("INSERT INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, enabled, rpm_limit, tpm_limit) VALUES ('google', 'test-model', 'Test Model', 1, 1, 1, 1000, 100000)").run();
+    const modelId = (db.prepare("SELECT id FROM models WHERE model_id = 'test-model'").get() as { id: number }).id;
+
+    // Add request history for dynamic pool calculation (balanced pool: speed score 5-8)
+    db.prepare("INSERT INTO requests (model_db_id, platform, model_id, tokens_used, response_time_ms, ttfb_ms, created_at) VALUES (?, 'google', 'test-model', 100, 500, 50, datetime('now'))").run(modelId);
+
+    // Enable in fallback
+    db.prepare("INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, 1, 1)").run(modelId);
+
+    // Insert API key
+    db.prepare("INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled) VALUES ('google', 'Test Key', 'enc', 'iv', 'tag', 'healthy', 1)").run();
+
+    // Mock ratelimit to deny all requests
+    (ratelimit.canMakeRequest as jest.Mock).mockReturnValue(false);
+
+    // Call routeRequest and expect it to throw
+    expect(() => routeRequest(100)).toThrow(/exhausted/i);
   });
 });

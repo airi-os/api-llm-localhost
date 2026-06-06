@@ -23,7 +23,7 @@ describe('OpenAICompatProvider', () => {
     let capturedHeaders: Record<string, string> = {};
     let capturedBody: { messages: { role: string; content: string }[] } | null = null;
 
-    vi.spyOn(global, 'fetch').mockImplementation(async (url: string, init?: RequestInit): Promise<Response> => {
+    vi.spyOn(global, 'fetch').mockImplementation((url: string, init?: RequestInit): Response => {
       capturedUrl = url;
       capturedHeaders = init?.headers as Record<string, string>;
       capturedBody = JSON.parse(init?.body as string) as { messages: { role: string; content: string }[] };
@@ -47,12 +47,13 @@ describe('OpenAICompatProvider', () => {
     expect(capturedHeaders['Authorization']).toBe('Bearer my-key');
     expect(capturedHeaders['X-Custom']).toBe('test');
     expect(capturedBody).toBeDefined();
-    expect(capturedBody!.messages[0].role).toBe('user');
+    if (capturedBody === null) throw new Error('capturedBody is null');
+    expect(capturedBody.messages[0].role).toBe('user');
   });
 
   it('should pass tool-calling params through untouched', async () => {
     let capturedBody: { tools: unknown[]; tool_choice: string; parallel_tool_calls: boolean } | null = null;
-    vi.spyOn(global, 'fetch').mockImplementation(async (_url: string, init: RequestInit) => {
+    vi.spyOn(global, 'fetch').mockImplementation((_url: string, init: RequestInit) => {
       capturedBody = JSON.parse(init.body as string) as { tools: unknown[]; tool_choice: string; parallel_tool_calls: boolean };
       return {
         ok: true,
@@ -256,7 +257,7 @@ describe('OpenAICompatProvider - platform instances', () => {
       const provider = new OpenAICompatProvider(p as unknown);
 
       let capturedUrl = '';
-      vi.spyOn(global, 'fetch').mockImplementation(async (url: RequestInfo) => {
+      vi.spyOn(global, 'fetch').mockImplementation((url: RequestInfo) => {
         capturedUrl = typeof url === 'string' ? url : url.toString();
         return {
           ok: true,

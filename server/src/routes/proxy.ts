@@ -139,8 +139,8 @@ function addProviderModelsToSkipModels(skipModels: Set<number>, provider: string
   const providerModels = db.prepare(
     'SELECT m.id FROM fallback_config fc JOIN models m ON m.id = fc.model_db_id AND m.enabled = 1 WHERE fc.enabled = 1 AND m.platform = ?'
   ).all(provider) as Array<{ id: number }>;
-  for (const m of providerModels) {
-    skipModels.add(m.id);
+  for (const model of providerModels) {
+    skipModels.add(model.id);
   }
 }
 
@@ -153,16 +153,11 @@ function resetAllConsecutiveFailures(
 
 function isTruncatedResponse(errOrContent: unknown): boolean {
   if (!errOrContent) return false;
-  let text: string;
-  if (typeof errOrContent === 'string') {
-    text = errOrContent;
-  } else if (errOrContent instanceof Error) {
-    text = errOrContent.message;
-  } else if (typeof errOrContent === 'object') {
-    try { text = JSON.stringify(errOrContent); } catch { return false; }
-  } else {
-    return false;
-  }
+  const text = typeof errOrContent === 'string' ? errOrContent
+    : errOrContent instanceof Error ? errOrContent.message
+    : typeof errOrContent === 'object' ? (() => { try { return JSON.stringify(errOrContent); } catch { return null; } })()
+    : null;
+  if (!text) return false;
   const lower = text.toLowerCase();
   return lower.includes('truncated') || lower.includes('truncation') ||
     lower.includes('context_length_exceeded') || lower.includes('token_limit') ||
@@ -1182,7 +1177,7 @@ async function handleChatCompletion(
   // session continuity on the provider side. getStickyKey() already
   // returns undefined when the sticky model's platform is banned.
   let preferredKeyId: number | undefined;
-  if (preferredModel && !requestedModel) {
+  if (preferredModel !== undefined && !requestedModel) {
     const stickyKeyId = getStickyKey(normalizedMessages, routingMode);
     if (stickyKeyId !== undefined) {
       preferredKeyId = stickyKeyId;
@@ -1339,7 +1334,7 @@ async function handleChatCompletion(
 
           const cleanup = () => {
             clearInterval(keepaliveTimer);
-            try { gen.return(undefined); } catch { /* already closed */ }
+            try { gen.return(); } catch { /* already closed */ }
           };
 
           const keepaliveTimer = setInterval(() => {

@@ -269,8 +269,10 @@ describe('Transient model cooldown functionality', () => {
       let preferredKeyIdVar: number | undefined = 5;
 
       if (preferredModelVar !== undefined && transientModelCooldowns.has(preferredModelVar)) {
-        const exp = transientModelCooldowns.get(preferredModelVar)!;
-        if (Date.now() <= exp) {
+        const exp = transientModelCooldowns.get(preferredModelVar);
+        if (exp === undefined) {
+          // Should not happen since we just checked has(), but satisfies TS
+        } else if (Date.now() <= exp) {
           preferredModelVar = undefined;
           preferredKeyIdVar = undefined;
         }
@@ -289,8 +291,10 @@ describe('Transient model cooldown functionality', () => {
       let preferredKeyIdVar: number | undefined = 5;
 
       if (preferredModelVar !== undefined && transientModelCooldowns.has(preferredModelVar)) {
-        const exp = transientModelCooldowns.get(preferredModelVar)!;
-        if (Date.now() <= exp) {
+        const exp = transientModelCooldowns.get(preferredModelVar);
+        if (exp === undefined) {
+          // Should not happen since we just checked has(), but satisfies TS
+        } else if (Date.now() <= exp) {
           preferredModelVar = undefined;
           preferredKeyIdVar = undefined;
         }
@@ -309,8 +313,10 @@ describe('Transient model cooldown functionality', () => {
       let preferredKeyIdVar: number | undefined = 5;
 
       if (preferredModelVar !== undefined && transientModelCooldowns.has(preferredModelVar)) {
-        const exp = transientModelCooldowns.get(preferredModelVar)!;
-        if (Date.now() <= exp) {
+        const exp = transientModelCooldowns.get(preferredModelVar);
+        if (exp === undefined) {
+          // Should not happen since we just checked has(), but satisfies TS
+        } else if (Date.now() <= exp) {
           preferredModelVar = undefined;
           preferredKeyIdVar = undefined;
         }
@@ -329,8 +335,10 @@ describe('Transient model cooldown functionality', () => {
       transientModelCooldowns.set(63, Date.now() + TRANSIENT_COOLDOWN_MS);
 
       if (preferredModelVar !== undefined && transientModelCooldowns.has(preferredModelVar)) {
-        const exp = transientModelCooldowns.get(preferredModelVar)!;
-        if (Date.now() <= exp) {
+        const exp = transientModelCooldowns.get(preferredModelVar);
+        if (exp === undefined) {
+          // Should not happen since we just checked has(), but satisfies TS
+        } else if (Date.now() <= exp) {
           preferredModelVar = undefined;
           preferredKeyIdVar = undefined;
         }
@@ -368,7 +376,7 @@ describe('Transient model cooldown functionality', () => {
       const groqModelIds = new Set(groqModels.map(m => m.id));
 
       // Mock provider to return 501 Not Implemented (NOT in isRetryableError's list)
-      vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+      vi.spyOn(global, 'fetch').mockImplementation((url, init) => {
         const urlStr = typeof url === 'string' ? url : url.toString();
         if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
           return origFetch(url, init);
@@ -417,7 +425,7 @@ describe('Transient model cooldown functionality', () => {
       const groqModelIds = new Set(groqModels.map(m => m.id));
 
       // Mock provider to return 502 Bad Gateway (in isRetryableError's list)
-      vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+      vi.spyOn(global, 'fetch').mockImplementation((url, init) => {
         const urlStr = typeof url === 'string' ? url : url.toString();
         if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
           return origFetch(url, init);
@@ -457,7 +465,7 @@ describe('Transient model cooldown functionality', () => {
       const groqModelIds = new Set(groqModels.map(m => m.id));
 
       // Mock provider to return 429
-      vi.spyOn(global, 'fetch').mockImplementation(async (url: string | URL, init?: RequestInit): Promise<Response> => {
+      vi.spyOn(global, 'fetch').mockImplementation((url: string | URL, init?: RequestInit): Response => {
         const urlStr = typeof url === 'string' ? url : url.toString();
         if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
           return origFetch(url, init);

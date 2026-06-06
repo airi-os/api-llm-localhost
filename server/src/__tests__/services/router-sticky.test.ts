@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { routeRequest } from '../../services/router.js';
+import { routeRequest, refreshStatsCache } from '../../services/router.js';
 import * as ratelimit from '../../services/ratelimit.js';
 import { getDb, initDb } from '../../db/index.js';
 
@@ -31,6 +31,36 @@ describe('Router Sticky Sessions', () => {
     // Disable all fallback entries by default
     db.prepare('UPDATE fallback_config SET enabled = 0').run();
 
+    // Add request history for dynamic pool calculation
+    // Fast models: tokPerSec >= 5000, avgTtfbMs <= 200 (speed score >= 8)
+    // Balanced models: tokPerSec ~500, avgTtfbMs ~500 (speed score 5-8)
+    // Smart models: tokPerSec ~50, avgTtfbMs ~3000 (speed score < 5)
+
+    // Fast pool models: high tokPerSec, low TTFB
+    // tokPerSec = output_tokens * 1000 / latency_ms
+    // For ~3000 tok/s: output_tokens=300, latency_ms=100
+    db.prepare(`
+      INSERT INTO requests (platform, model_id, status, latency_ms, output_tokens, ttfb_ms, created_at)
+      VALUES ('openai', 'gpt-4o-mini', 'success', 100, 300, 150, datetime('now', '-1 day'))
+    `).run();
+
+    // Balanced pool models: moderate tokPerSec
+    // For ~150 tok/s: output_tokens=150, latency_ms=1000
+    db.prepare(`
+      INSERT INTO requests (platform, model_id, status, latency_ms, output_tokens, ttfb_ms, created_at)
+      VALUES ('google', 'gemini-2.0-flash', 'success', 1000, 150, 500, datetime('now', '-1 day'))
+    `).run();
+
+    // Smart pool models (slow, high quality): low tokPerSec, high TTFB
+    // For ~15 tok/s: output_tokens=30, latency_ms=2000
+    db.prepare(`
+      INSERT INTO requests (platform, model_id, status, latency_ms, output_tokens, ttfb_ms, created_at)
+      VALUES ('longcat', 'lc-test', 'success', 2000, 30, 3000, datetime('now', '-1 day'))
+    `).run();
+
+    // Refresh stats cache with the new request history
+    refreshStatsCache(db, true);
+
     vi.clearAllMocks();
   });
 
@@ -44,6 +74,21 @@ describe('Router Sticky Sessions', () => {
     // Insert a balanced model
     db.prepare("INSERT INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, enabled, rpm_limit, tpm_limit) VALUES ('google', 'balanced-test', 'Balanced Test', 2, 2, 1, 1000, 100000)").run();
     const balancedId = (db.prepare("SELECT id FROM models WHERE model_id = 'balanced-test'").get() as { id: number }).id;
+
+    // Add request history for dynamic pool calculation
+    // lc-test: Smart pool (slow, high quality) - tokPerSec ~15, avgTtfbMs ~3000
+    db.prepare(`
+      INSERT INTO requests (platform, model_id, status, latency_ms, output_tokens, ttfb_ms, created_at)
+      VALUES ('longcat', 'lc-test', 'success', 2000, 30, 3000, datetime('now', '-1 day'))
+    `).run();
+    // balanced-test: Balanced pool - tokPerSec ~150, avgTtfbMs ~500
+    db.prepare(`
+      INSERT INTO requests (platform, model_id, status, latency_ms, output_tokens, ttfb_ms, created_at)
+      VALUES ('google', 'balanced-test', 'success', 1000, 150, 500, datetime('now', '-1 day'))
+    `).run();
+
+    // Refresh stats cache with the new request history
+    refreshStatsCache(db, true);
 
     // Enable both in fallback
     db.prepare("INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, 1, 1)").run(lcId);
@@ -71,6 +116,16 @@ describe('Router Sticky Sessions', () => {
     // Insert a model
     db.prepare("INSERT INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, enabled, rpm_limit, tpm_limit) VALUES ('google', 'test-model', 'Test Model', 1, 1, 1, 1000, 100000)").run();
     const modelId = (db.prepare("SELECT id FROM models WHERE model_id = 'test-model'").get() as { id: number }).id;
+
+    // Add request history for dynamic pool calculation
+    // test-model: Balanced pool - tokPerSec ~150, avgTtfbMs ~500
+    db.prepare(`
+      INSERT INTO requests (platform, model_id, status, latency_ms, output_tokens, ttfb_ms, created_at)
+      VALUES ('google', 'test-model', 'success', 1000, 150, 500, datetime('now', '-1 day'))
+    `).run();
+
+    // Refresh stats cache with the new request history
+    refreshStatsCache(db, true);
 
     // Enable in fallback
     db.prepare("INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, 1, 1)").run(modelId);
@@ -102,6 +157,21 @@ describe('Router Sticky Sessions', () => {
     db.prepare("INSERT INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, enabled, rpm_limit, tpm_limit) VALUES ('google', 'balanced-test', 'Balanced Test', 2, 2, 1, 1000, 100000)").run();
     const balancedId = (db.prepare("SELECT id FROM models WHERE model_id = 'balanced-test'").get() as { id: number }).id;
 
+    // Add request history for dynamic pool calculation
+    // lc-test: Smart pool (slow, high quality) - tokPerSec ~15, avgTtfbMs ~3000
+    db.prepare(`
+      INSERT INTO requests (platform, model_id, status, latency_ms, output_tokens, ttfb_ms, created_at)
+      VALUES ('longcat', 'lc-test', 'success', 2000, 30, 3000, datetime('now', '-1 day'))
+    `).run();
+    // balanced-test: Balanced pool - tokPerSec ~150, avgTtfbMs ~500
+    db.prepare(`
+      INSERT INTO requests (platform, model_id, status, latency_ms, output_tokens, ttfb_ms, created_at)
+      VALUES ('google', 'balanced-test', 'success', 1000, 150, 500, datetime('now', '-1 day'))
+    `).run();
+
+    // Refresh stats cache with the new request history
+    refreshStatsCache(db, true);
+
     // Enable both in fallback
     db.prepare("INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, 1, 1)").run(lcId);
     db.prepare("INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, 2, 1)").run(balancedId);
@@ -128,6 +198,16 @@ describe('Router Sticky Sessions', () => {
     // Insert a model
     db.prepare("INSERT INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, enabled, rpm_limit, tpm_limit) VALUES ('google', 'test-model', 'Test Model', 1, 1, 1, 1000, 100000)").run();
     const modelId = (db.prepare("SELECT id FROM models WHERE model_id = 'test-model'").get() as { id: number }).id;
+
+    // Add request history for dynamic pool calculation
+    // test-model: Balanced pool - tokPerSec ~150, avgTtfbMs ~500
+    db.prepare(`
+      INSERT INTO requests (platform, model_id, status, latency_ms, output_tokens, ttfb_ms, created_at)
+      VALUES ('google', 'test-model', 'success', 1000, 150, 500, datetime('now', '-1 day'))
+    `).run();
+
+    // Refresh stats cache with the new request history
+    refreshStatsCache(db, true);
 
     // Enable in fallback
     db.prepare("INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, 1, 1)").run(modelId);

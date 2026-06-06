@@ -286,7 +286,7 @@ export default function PlaygroundPage() {
           ) : (
             <>
               {messages.map((msg, i) => (
-                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div key={`${msg.role}-${i}`} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                   {msg.role === 'user' ? (
                     <div className="max-w-[78%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed bg-primary text-primary-foreground">
                       <div className="whitespace-pre-wrap">{msg.content}</div>

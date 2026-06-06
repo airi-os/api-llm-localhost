@@ -31,7 +31,7 @@ describe('CloudflareProvider', () => {
     let capturedHeaders: Record<string, string> = {};
     let capturedBody: CapturedBody | null = null;
 
-    vi.spyOn(global, 'fetch').mockImplementation(async (url: string, init?: RequestInit): Promise<Response> => {
+    vi.spyOn(global, 'fetch').mockImplementation((url: string, init?: RequestInit): Response => {
       capturedUrl = url;
       capturedHeaders = (init?.headers as Record<string, string>) ?? {};
       capturedBody = JSON.parse(init?.body as string) as CapturedBody;
@@ -58,7 +58,8 @@ describe('CloudflareProvider', () => {
     expect(capturedUrl).toContain('/ai/v1/chat/completions');
     expect(capturedHeaders['Authorization']).toBe('Bearer my-token-here');
     expect(capturedBody).toBeDefined();
-    expect(capturedBody!.model).toBe('@cf/meta/llama-3.1-70b-instruct');
+    if (capturedBody === null) throw new Error('capturedBody is null');
+    expect(capturedBody.model).toBe('@cf/meta/llama-3.1-70b-instruct');
     expect(result.choices[0].message.content).toBe('Hello from CF!');
   });
 
@@ -70,7 +71,7 @@ describe('CloudflareProvider', () => {
 
   it('should convert null assistant content to empty string (CF rejects null)', async () => {
     let capturedBody: unknown = null;
-    vi.spyOn(global, 'fetch').mockImplementation(async (_url: RequestInfo, init: RequestInit) => {
+    vi.spyOn(global, 'fetch').mockImplementation((_url: RequestInfo, init: RequestInit) => {
       capturedBody = JSON.parse(init.body as string);
       return {
         ok: true,

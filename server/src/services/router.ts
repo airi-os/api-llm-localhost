@@ -5,6 +5,7 @@ import { canMakeRequest, canUseTokens, isOnCooldown } from './ratelimit.js';
 import type { BaseProvider } from '../providers/base.js';
 import type { Database } from 'better-sqlite3';
 import type { Platform } from '@freellmapi/shared/types.js';
+import { ModelPool } from '@freellmapi/shared/types.js';
 
 interface ChainRow {
   model_db_id: number;
@@ -91,19 +92,19 @@ function ttfbContribution(avgTtfbMs: number | null): number {
 
   if (avgTtfbMs < TTFB_VERY_GOOD_MS) return TTFB_WEIGHT * 1.0;
   if (avgTtfbMs < TTFB_GOOD_MS) {
-    const t = (avgTtfbMs - TTFB_VERY_GOOD_MS) / (TTFB_GOOD_MS - TTFB_VERY_GOOD_MS);
-    return TTFB_WEIGHT * (1.0 - 0.4 * t);
+    const ttfbProgress = (avgTtfbMs - TTFB_VERY_GOOD_MS) / (TTFB_GOOD_MS - TTFB_VERY_GOOD_MS);
+    return TTFB_WEIGHT * (1.0 - 0.4 * ttfbProgress);
   }
   if (avgTtfbMs < TTFB_ACCEPTABLE_MS) {
-    const t = (avgTtfbMs - TTFB_GOOD_MS) / (TTFB_ACCEPTABLE_MS - TTFB_GOOD_MS);
-    return TTFB_WEIGHT * (0.6 - 0.6 * t);
+    const ttfbProgress = (avgTtfbMs - TTFB_GOOD_MS) / (TTFB_ACCEPTABLE_MS - TTFB_GOOD_MS);
+    return TTFB_WEIGHT * (0.6 - 0.6 * ttfbProgress);
   }
   // Penalty zone: continuous from 0 at 2 s to -TTFB_MAX_PENALTY at 10 s+
-  const t = Math.min(
+  const ttfbProgress = Math.min(
     (avgTtfbMs - TTFB_ACCEPTABLE_MS) / (TTFB_MAX_PENALTY_MS - TTFB_ACCEPTABLE_MS),
     1.0,
   );
-  return -TTFB_MAX_PENALTY * t;
+  return -TTFB_MAX_PENALTY * ttfbProgress;
 }
 
 // Returns the combined speed term (reward − slow penalty) for a model with data.
@@ -133,22 +134,22 @@ function randomNormal(): number {
 
 function sampleGamma(shape: number): number {
   if (shape < 1) return sampleGamma(shape + 1) * Math.pow(Math.random() || Number.EPSILON, 1 / shape);
-  const d = shape - 1 / 3;
-  const c = 1 / Math.sqrt(9 * d);
+  const gammaD = shape - 1 / 3;
+  const gammaC = 1 / Math.sqrt(9 * gammaD);
   for (;;) {
-    let x: number, v: number;
-    do { x = randomNormal(); v = 1 + c * x; } while (v <= 0);
-    v = v ** 3;
-    const u = Math.random();
-    if (u < 1 - 0.0331 * x ** 4) return d * v;
-    if (Math.log(u) < 0.5 * x * x + d * (1 - v + Math.log(v))) return d * v;
+    let normalX: number, normalV: number;
+    do { normalX = randomNormal(); normalV = 1 + gammaC * normalX; } while (normalV <= 0);
+    normalV = normalV ** 3;
+    const randomU = Math.random();
+    if (randomU < 1 - 0.0331 * normalX ** 4) return gammaD * normalV;
+    if (Math.log(randomU) < 0.5 * normalX * normalX + gammaD * (1 - normalV + Math.log(normalV))) return gammaD * normalV;
   }
 }
 
 function sampleBeta(alpha: number, beta: number): number {
-  const x = sampleGamma(alpha);
-  const y = sampleGamma(beta);
-  return x / (x + y);
+  const gammaAlpha = sampleGamma(alpha);
+  const gammaBeta = sampleGamma(beta);
+  return gammaAlpha / (gammaAlpha + gammaBeta);
 }
 
 interface ModelStats {
@@ -159,15 +160,82 @@ interface ModelStats {
   avgTtfbMs: number | null; // avg TTFB across successful requests (null if no data)
 }
 
-export type RoutingMode = 'balanced' | 'smart';
+export type RoutingMode = 'balanced' | 'smart' | 'fast';
 
-// ── Balanced mode exclusions ────────────────────────────────────────────────
-// LongCat and Owl Alpha are excluded from balanced auto-routing so they are
-// only reachable via explicit model request or smart-mode preference.
-const EXCLUDED_FROM_BALANCED = new Set<string>(['longcat']);
-const EXCLUDED_MODELS_FROM_BALANCED = new Map<string, Set<string>>([
-  ['openrouter', new Set(['owl-alpha'])],
-]);
+// ── Dynamic Pool Assignment Thresholds ─────────────────────────────────────
+// Speed score is calculated as: log(tokPerSec) - log(avgTtfbMs + 1) * 0.1
+// Higher scores indicate faster models.
+const FAST_THRESHOLD = 8;       // Very high speed (e.g., ~3000 tok/s with low TTFB)
+const BALANCED_THRESHOLD = 5;   // Good speed (e.g., ~150 tok/s with low TTFB)
+
+// ── Dynamic Pool Calculation ────────────────────────────────────────────────
+// Calculates pool based on actual performance metrics from stats cache.
+// This replaces static classification with dynamic formula-based assignment.
+function calculateModelPool(entry: ChainRow): ModelPool {
+  const stats = statsCache?.get(`${entry.platform}:${entry.model_id}`);
+  const tokPerSec = stats?.tokPerSec ?? 0;
+  const avgTtfbMs = stats?.avgTtfbMs ?? null;
+
+  // Calculate speed score using logarithmic scale
+  // log() naturally compresses extreme values while still differentiating speeds
+  const speedScore = tokPerSec > 0 ? Math.log(tokPerSec) : 0;
+  // Apply TTFB penalty (higher TTFB = slower perceived speed)
+  const ttfbPenalty = avgTtfbMs !== null ? Math.log(avgTtfbMs + 1) * 0.1 : 0;
+  const effectiveSpeedScore = speedScore - ttfbPenalty;
+
+  if (effectiveSpeedScore >= FAST_THRESHOLD) return ModelPool.Fast;
+  if (effectiveSpeedScore >= BALANCED_THRESHOLD) return ModelPool.Balanced;
+  return ModelPool.Smart;
+}
+
+/**
+ * Calculate pool assignment from raw performance metrics.
+ * Standalone version for use by fallback.ts (no ChainRow dependency).
+ *
+ * Formula: speedScore = log(tokPerSec) - log(avgTtfbMs + 1) * 0.1
+ *   >= 8  → Fast
+ *   >= 5  → Balanced
+ *   < 5  → Smart
+ */
+export function calculatePoolFromMetrics(tokPerSec: number, avgTtfbMs: number | null): ModelPool {
+  const speedScore = tokPerSec > 0 ? Math.log(tokPerSec) : 0;
+  const ttfbPenalty = avgTtfbMs !== null ? Math.log(avgTtfbMs + 1) * 0.1 : 0;
+  const effectiveSpeedScore = speedScore - ttfbPenalty;
+
+  if (effectiveSpeedScore >= FAST_THRESHOLD) return ModelPool.Fast;
+  if (effectiveSpeedScore >= BALANCED_THRESHOLD) return ModelPool.Balanced;
+  return ModelPool.Smart;
+}
+
+// ── Get Models for Routing Mode ────────────────────────────────────────────
+// Filters models based on routing mode with borrowing rules:
+// - Smart: Only smart pool (never borrows)
+// - Balanced: Balanced pool first, then borrow from fast pool
+// - Fast: Fast pool first, then borrow from balanced pool
+function getModelsForMode(chain: ChainRow[], routingMode: RoutingMode): ChainRow[] {
+  switch (routingMode) {
+    case 'smart':
+      // Smart mode: only smart pool, no borrowing
+      return chain.filter(entry => calculateModelPool(entry) === ModelPool.Smart);
+    
+    case 'fast':
+      // Fast mode: fast pool first, then borrow from balanced
+      return chain.filter(entry => {
+        const pool = calculateModelPool(entry);
+        return pool === ModelPool.Fast || pool === ModelPool.Balanced;
+      });
+    
+    case 'balanced':
+    default:
+      // Balanced mode: balanced pool first, then borrow from fast
+      return chain.filter(entry => {
+        const pool = calculateModelPool(entry);
+        return pool === ModelPool.Balanced || pool === ModelPool.Fast;
+      });
+  }
+}
+
+// ── Stats Cache ─────────────────────────────────────────────────────────────
 
 let statsCache: Map<string, ModelStats> | null = null;
 let statsCacheTime = 0;
@@ -466,6 +534,19 @@ export function getAllPenalties(): Array<{ modelDbId: number; count: number; pen
 // ── Key capacity helper ──────────────────────────────────────────────────────
 // Checks whether any enabled, non-invalid key for a given platform/model has
 // capacity (not on cooldown, can make a request, can use the estimated tokens).
+function isKeyAvailable(
+  platform: string,
+  modelId: string,
+  keyId: number,
+  limits: { rpm: number | null; rpd: number | null; tpm: number | null; tpd: number | null },
+  estimatedTokens: number,
+): boolean {
+  const notOnCooldown = !isOnCooldown(platform, modelId, keyId);
+  const hasRequestQuota = canMakeRequest(platform, modelId, keyId, limits);
+  const hasTokenQuota = canUseTokens(platform, modelId, keyId, estimatedTokens, limits);
+  return notOnCooldown && hasRequestQuota && hasTokenQuota;
+}
+
 function hasValidKeys(
   platform: string,
   modelId: string,
@@ -476,11 +557,7 @@ function hasValidKeys(
   const keys = db.prepare(
     'SELECT * FROM api_keys WHERE platform = ? AND enabled = 1 AND status != ?'
   ).all(platform, 'invalid') as KeyRow[];
-  return keys.some(key =>
-    !isOnCooldown(platform, modelId, key.id) &&
-    canMakeRequest(platform, modelId, key.id, limits) &&
-    canUseTokens(platform, modelId, key.id, estimatedTokens, limits)
-  );
+  return keys.some(key => isKeyAvailable(platform, modelId, key.id, limits, estimatedTokens));
 }
 
 /**
@@ -521,18 +598,11 @@ export function routeRequest(
     WHERE fc.enabled = 1
   `).all() as ChainRow[];
 
-  // T1.2: In balanced mode, exclude LongCat platform and Owl Alpha model.
-  // Exception: if the sticky session preferred model is on an excluded platform,
-  // allow it through so the session can still route to its preferred model.
-  const filteredChain = routingMode === 'balanced'
-    ? chain.filter(entry => {
-        const isPreferred = entry.model_db_id === preferredModelDbId;
-        if (EXCLUDED_FROM_BALANCED.has(entry.platform) && !isPreferred) return false;
-        const excludedModels = EXCLUDED_MODELS_FROM_BALANCED.get(entry.platform);
-        if (excludedModels?.has(entry.model_id) && !isPreferred) return false;
-        return true;
-      })
-    : chain;
+  // Filter models based on routing mode with dynamic pool assignment.
+  // Smart mode: only smart pool (never borrows)
+  // Balanced mode: balanced pool first, then borrow from fast pool
+  // Fast mode: fast pool first, then borrow from balanced pool
+  const filteredChain = getModelsForMode(chain, routingMode);
 
   const intelligenceRanks = filteredChain.map(entry => entry.intelligence_rank);
   const minIntelligenceRank = Math.min(...intelligenceRanks);
@@ -620,7 +690,7 @@ export function routeRequest(
     };
 
     const rrKey = `${entry.platform}:${entry.model_id}`;
-    let idx = roundRobinIndex.get(rrKey) ?? 0;
+    let roundRobinIdx = roundRobinIndex.get(rrKey) ?? 0;
     let exhaustedBy429 = false;
 
     // Sticky key: try the preferred key first before round-robin
@@ -648,8 +718,8 @@ export function routeRequest(
     }
 
     for (let attempt = 0; attempt < keys.length; attempt++) {
-      const key = keys[idx % keys.length];
-      idx++;
+      const key = keys[roundRobinIdx % keys.length];
+      roundRobinIdx++;
 
       const skipId = `${entry.platform}:${entry.model_id}:${key.id}`;
       if (skipKeys?.has(skipId)) {
@@ -660,7 +730,7 @@ export function routeRequest(
       if (!canMakeRequest(entry.platform, entry.model_id, key.id, limits)) continue;
       if (!canUseTokens(entry.platform, entry.model_id, key.id, estimatedTokens, limits)) continue;
 
-      roundRobinIndex.set(rrKey, idx);
+      roundRobinIndex.set(rrKey, roundRobinIdx);
       const decryptedKey = decrypt(key.encrypted_key, key.iv, key.auth_tag);
 
       return {
@@ -677,7 +747,7 @@ export function routeRequest(
     // Only penalise the model in the bandit once all its keys are exhausted
     // by 429s — a single key failing doesn't mean the model is overloaded.
     if (exhaustedBy429) recordRateLimitHit(entry.model_db_id);
-    roundRobinIndex.set(rrKey, idx);
+    roundRobinIndex.set(rrKey, roundRobinIdx);
   }
 
   const err = new Error('All models exhausted. Add more API keys or wait for rate limits to reset.') as Error & { status: number };

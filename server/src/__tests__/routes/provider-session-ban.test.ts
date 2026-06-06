@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import type { Express } from 'express';
 import { createApp } from '../../app.js';
-import { initDb, getDb, getUnifiedApiKey } from '../../db/index.js';
+import { initDb, getUnifiedApiKey } from '../../db/index.js';
 import {
   isSessionBannedFromPlatform,
   banPlatformFromSession,
@@ -270,7 +270,7 @@ describe('Provider session ban functionality', () => {
       expect(isTruncatedResponse({ error: 'context_length_exceeded' })).toBe(true);
       expect(isTruncatedResponse({ foo: 'bar' })).toBe(false);
       expect(isTruncatedResponse(null)).toBe(false);
-      expect(isTruncatedResponse(undefined)).toBe(false);
+      expect(isTruncatedResponse()).toBe(false);
       expect(isTruncatedResponse(123)).toBe(false);
     });
   });

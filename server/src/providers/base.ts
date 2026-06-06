@@ -66,7 +66,7 @@ export abstract class BaseProvider {
 
   abstract validateKey(apiKey: string): Promise<boolean>;
 
-  protected async fetchWithTimeout(
+  protected static async fetchWithTimeout(
     url: string,
     init: RequestInit,
     timeoutMs = 15000,
@@ -81,8 +81,8 @@ export abstract class BaseProvider {
   }
 
   protected async createApiError(res: Response): Promise<ProviderApiError> {
-    const body = await this.readErrorBody(res);
-    const message = this.extractErrorMessage(body, res.statusText);
+    const body = await BaseProvider.readErrorBody(res);
+    const message = BaseProvider.extractErrorMessage(body, res.statusText);
     const error = new Error(`${this.name} API error ${res.status}: ${message}`) as ProviderApiError;
     error.status = res.status;
     error.provider = this.name;
@@ -90,7 +90,7 @@ export abstract class BaseProvider {
     return error;
   }
 
-  private async readErrorBody(res: Response): Promise<unknown> {
+  private static async readErrorBody(res: Response): Promise<unknown> {
     if (typeof res.text === 'function') {
       const text = await res.text().catch(() => '');
       if (!text) return null;
@@ -109,7 +109,7 @@ export abstract class BaseProvider {
     return null;
   }
 
-  protected extractErrorMessage(body: unknown, fallback: string): string {
+  protected static extractErrorMessage(body: unknown, fallback: string): string {
     if (typeof body === 'string') return body || fallback;
     if (!body || typeof body !== 'object') return fallback;
 
@@ -117,7 +117,7 @@ export abstract class BaseProvider {
     return err.error?.message ?? err.errors?.[0]?.message ?? err.message ?? fallback;
   }
 
-  protected makeId(): string {
+  protected static makeId(): string {
     return `chatcmpl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   }
 
@@ -135,7 +135,7 @@ export abstract class BaseProvider {
   protected throwWrappedError(body: unknown): void {
     const obj = body as Record<string, unknown>;
     const errPayload = obj.error;
-    const message = this.extractErrorMessage(body, 'Unknown wrapped error');
+    const message = BaseProvider.extractErrorMessage(body, 'Unknown wrapped error');
     const error = new Error(
       `${this.name} API error (wrapped in 200): ${message}`,
     ) as ProviderApiError;

@@ -1,8 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { routeRequest } from '../../services/router.js';
-import * as ratelimit from '../../services/ratelimit.js';
+import { canMakeRequest, canUseTokens, isOnCooldown } from '../../services/ratelimit.js';
 import { getDb, initDb } from '../../db/index.js';
-import * as crypto from '../../lib/crypto.js';
 
 // Mock ratelimit to control quota availability
 vi.mock('../../services/ratelimit.js', async () => {
@@ -51,18 +50,15 @@ describe('Routing Key Exhaustion', () => {
   it('should skip exhausted Key B and use functional Key A for the same high-priority model', () => {
     const db = getDb();
     const keys = db.prepare("SELECT id, label FROM api_keys").all();
-    const keyA = keys.find(k => k.label === 'Key A');
-    const keyB = keys.find(k => k.label === 'Key B');
+    const keyA = keys.find(key => key.label === 'Key A');
+    const keyB = keys.find(key => key.label === 'Key B');
 
     // Mock behavior:
     // Key B is exhausted (returns false for canMakeRequest)
     // Key A is functional (returns true)
-    (ratelimit.canMakeRequest as jest.Mock).mockImplementation((platform, modelId, keyId) => {
-      if (keyId === keyB.id) return false;
-      if (keyId === keyA.id) return true;
-      return true;
-    });
-    (ratelimit.canUseTokens as jest.Mock).mockReturnValue(true);
+    const isKeyA = (_platform: unknown, _modelId: unknown, keyId: number) => keyId === keyA.id;
+    (canMakeRequest as jest.Mock).mockImplementation(isKeyA);
+    (canUseTokens as jest.Mock).mockReturnValue(true);
 
     db.prepare("UPDATE fallback_config SET enabled = 0 WHERE model_db_id = (SELECT id FROM models WHERE model_id = 'test-flash')").run();
 
@@ -72,21 +68,18 @@ describe('Routing Key Exhaustion', () => {
     // Assert: It should have picked the Pro model despite Key B being exhausted
     expect(result.modelId).toBe('test-pro');
     expect(result.keyId).toBe(keyA.id);
-    expect(ratelimit.canMakeRequest).toHaveBeenCalled();
+    expect(canMakeRequest).toHaveBeenCalled();
   });
 
   it('should throw 429 when every key on every model is exhausted', () => {
-    (ratelimit.canMakeRequest as jest.Mock).mockReturnValue(false);
+    (canMakeRequest as jest.Mock).mockReturnValue(false);
     expect(() => routeRequest(100)).toThrow(/All models exhausted/);
   });
 
   it('should fall back to Flash when Pro is exhausted but Flash has quota', () => {
-    (ratelimit.canMakeRequest as jest.MockedFunction<typeof ratelimit.canMakeRequest>).mockImplementation((_platform: string, modelId: string) => {
-      if (modelId === 'test-pro') return false;
-      if (modelId === 'test-flash') return true;
-      return true;
-    });
-    (ratelimit.canUseTokens as jest.MockedFunction<typeof ratelimit.canUseTokens>).mockReturnValue(true);
+    const isNotPro = (_platform: string, modelId: string) => modelId !== 'test-pro';
+    (canMakeRequest as jest.MockedFunction<typeof canMakeRequest>).mockImplementation(isNotPro);
+    (canUseTokens as jest.MockedFunction<typeof canUseTokens>).mockReturnValue(true);
 
     const result = routeRequest(100);
     expect(result.modelId).toBe('test-flash');

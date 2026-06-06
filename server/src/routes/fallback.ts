@@ -2,24 +2,9 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { getDb } from '../db/index.js';
-import { getAllPenalties, getAnalyticsScores, getAnalyticsScore, getSmartAnalyticsScore, refreshStatsCache, PENALTY_SCORE_WEIGHT } from '../services/router.js';
-import { ModelPool } from '@freellmapi/shared/types.js';
+import { getAllPenalties, getAnalyticsScores, getAnalyticsScore, getSmartAnalyticsScore, refreshStatsCache, PENALTY_SCORE_WEIGHT, calculatePoolFromMetrics } from '../services/router.js';
 
 export const fallbackRouter: Router = Router();
-
-// Models excluded from balanced auto-routing are in the Smart pool.
-// All other models are in the Balanced pool by default.
-function getModelPool(platform: string, modelId: string): ModelPool {
-  // Fast pool: models explicitly marked as fast via naming convention or known fast identifiers.
-  if (modelId.endsWith('-fast') || modelId === 'openai-fast') {
-    return ModelPool.Fast;
-  }
-  // Smart pool: models that should be routed for highest intelligence.
-  if (platform === 'longcat') return ModelPool.Smart;
-  if (platform === 'openrouter' && modelId === 'owl-alpha') return ModelPool.Smart;
-  // Default to Balanced pool.
-  return ModelPool.Balanced;
-}
 
 // Define the type for rows returned from the fallback_config query
 type FallbackRow = {
@@ -104,7 +89,7 @@ fallbackRouter.get('/', (_req: Request, res: Response) => {
       rpdLimit: r.rpd_limit,
       monthlyTokenBudget: r.monthly_token_budget,
       keyCount: keyCountMap.get(r.platform) ?? 0,
-      pool: getModelPool(r.platform, r.model_id),
+      pool: calculatePoolFromMetrics(analytics?.tokPerSec ?? 0, analytics?.avgTtfbMs ?? null),
     };
   });
 
@@ -163,8 +148,8 @@ fallbackRouter.post('/sort/:criterion', (req: Request, res: Response) => {
 
   const update = db.prepare('UPDATE fallback_config SET priority = ? WHERE model_db_id = ?');
   const applySort = db.transaction(() => {
-    for (let i = 0; i < rows.length; i++) {
-      update.run(i + 1, rows[i].model_db_id);
+    for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+      update.run(rowIndex + 1, rows[rowIndex].model_db_id);
     }
   });
   applySort();

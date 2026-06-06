@@ -40,12 +40,14 @@ describe('Fallback Pool Classification', () => {
     }
   });
 
-  it('GET /api/fallback pool values include fast for -fast suffix models', async () => {
+  it('GET /api/fallback pool values are based on performance metrics', async () => {
     const { body } = await request(app, 'GET', '/api/fallback');
-    const entries = body as Array<{ modelId: string; pool: string }>;
-    const fastEntries = entries.filter(e => e.modelId.endsWith('-fast'));
-    for (const entry of fastEntries) {
-      expect(entry.pool).toBe(ModelPool.Fast);
+    const entries = body as Array<{ pool: string; tokPerSec: number | null; avgTtfbMs: number | null }>;
+    // Pool classification should be based on tokPerSec and avgTtfbMs metrics
+    for (const entry of entries) {
+      if (entry.tokPerSec !== null && entry.tokPerSec > 100) {
+        expect(entry.pool).toBe(ModelPool.Fast);
+      }
     }
   });
 

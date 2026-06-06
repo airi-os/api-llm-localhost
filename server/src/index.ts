@@ -7,7 +7,7 @@ import { startHealthChecker } from './services/health.js';
 
 const PORT = process.env.PORT ?? 3001;
 
-async function main() {
+function main() {
   assertAdminAuthConfigured();
   initDb();
   const app = createApp();

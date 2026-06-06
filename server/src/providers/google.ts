@@ -58,10 +58,10 @@ function normalizeGeminiArgs(args: unknown): string {
 }
 
 function toGeminiFinishReason(finishReason?: string): string {
-  const r = (finishReason ?? '').toUpperCase();
-  if (!r) return 'stop';
-  if (r === 'MAX_TOKENS') return 'length';
-  if (r === 'SAFETY' || r === 'RECITATION' || r === 'BLOCKLIST' || r === 'PROHIBITED_CONTENT' || r === 'SPII') {
+  const reason = (finishReason ?? '').toUpperCase();
+  if (!reason) return 'stop';
+  if (reason === 'MAX_TOKENS') return 'length';
+  if (reason === 'SAFETY' || reason === 'RECITATION' || reason === 'BLOCKLIST' || reason === 'PROHIBITED_CONTENT' || reason === 'SPII') {
     return 'content_filter';
   }
   return 'stop';
@@ -109,8 +109,8 @@ function toGeminiContents(messages: ChatMessage[]) {
     .map(m => m.content as string);
 
   const toolNameByCallId = new Map<string, string>();
-  for (const m of messages) {
-    for (const tc of m.tool_calls ?? []) {
+  for (const message of messages) {
+    for (const tc of message.tool_calls ?? []) {
       toolNameByCallId.set(tc.id, tc.function.name);
     }
   }
@@ -233,7 +233,7 @@ export class GoogleProvider extends BaseProvider {
     if (systemInstruction) body.systemInstruction = systemInstruction;
 
     const url = `${API_BASE}/models/${modelId}:generateContent?key=${apiKey}`;
-    const res = await this.fetchWithTimeout(url, {
+    const res = await GoogleProvider.fetchWithTimeout(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -261,7 +261,7 @@ export class GoogleProvider extends BaseProvider {
     };
 
     return {
-      id: this.makeId(),
+      id: GoogleProvider.makeId(),
       object: 'chat.completion',
       created: Math.floor(Date.now() / 1000),
       model: modelId,
@@ -300,7 +300,7 @@ export class GoogleProvider extends BaseProvider {
     if (systemInstruction) body.systemInstruction = systemInstruction;
 
     const url = `${API_BASE}/models/${modelId}:streamGenerateContent?alt=sse&key=${apiKey}`;
-    const res = await this.fetchWithTimeout(url, {
+    const res = await GoogleProvider.fetchWithTimeout(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -314,7 +314,7 @@ export class GoogleProvider extends BaseProvider {
     if (!reader) throw new Error('No response body');
 
     const decoder = new TextDecoder();
-    const id = this.makeId();
+    const id = GoogleProvider.makeId();
     let buffer = '';
     let emittedFinish = false;
     let sawToolCalls = false;
@@ -430,7 +430,7 @@ export class GoogleProvider extends BaseProvider {
   async validateKey(apiKey: string): Promise<boolean> {
     // Transport errors propagate — health.ts marks status='error' without
     // counting toward auto-disable. Only confirmed 401/403 disables a key.
-    const res = await this.fetchWithTimeout(
+    const res = await GoogleProvider.fetchWithTimeout(
       `${API_BASE}/models?key=${apiKey}`,
       { method: 'GET' },
       10000,

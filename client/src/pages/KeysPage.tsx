@@ -197,7 +197,7 @@ export default function KeysPage() {
   }
 
   const healthKeyMap = new Map<number, { status: string; lastCheckedAt: string | null }>()
-  for (const k of healthData?.keys ?? []) healthKeyMap.set(k.id, k)
+  for (const key of healthData?.keys ?? []) healthKeyMap.set(key.id, key)
 
   const grouped = PLATFORMS.map(p => ({
     ...p,

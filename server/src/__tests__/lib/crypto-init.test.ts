@@ -4,7 +4,7 @@ import { initEncryptionKey, encrypt, decrypt } from '../../lib/crypto.js';
 
 function freshDb(): Database.Database {
   const db = new Database(':memory:');
-  db.exec(`CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+  db.exec("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
   return db;
 }
 

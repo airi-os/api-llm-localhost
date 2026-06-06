@@ -84,7 +84,7 @@ describe('Full Integration Flow', () => {
   it('Step 5: Proxy routes to Groq and handles provider error gracefully', async () => {
     // Mock fetch to simulate a Groq API error
     const origFetch = global.fetch;
-    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+    vi.spyOn(global, 'fetch').mockImplementation((url, init) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       // If it's calling the Groq API, return an error
       if (urlStr.includes('api.groq.com')) {

@@ -16,7 +16,7 @@ describe('CohereProvider', () => {
   it('should call compatibility API and return OpenAI response', async () => {
     let capturedUrl = '';
     let capturedBody: unknown = null;
-    vi.spyOn(global, 'fetch').mockImplementationOnce(async (url, init) => {
+    vi.spyOn(global, 'fetch').mockImplementationOnce((url, init) => {
       capturedUrl = String(url);
       capturedBody = JSON.parse((init as RequestInit).body as string);
       return {

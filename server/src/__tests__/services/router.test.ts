@@ -31,6 +31,13 @@ describe('Router', () => {
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run('groq', 'test', encrypted, iv, authTag, 'healthy', 1);
 
+    // Add request history for dynamic pool calculation (Balanced pool: tokPerSec=500, avgTtfbMs=50)
+    const groqModel = db.prepare("SELECT model_id FROM models WHERE platform = 'groq' LIMIT 1").get() as { model_id: string } | undefined;
+    if (groqModel) {
+      db.prepare("INSERT INTO requests (platform, model_id, status, latency_ms, output_tokens, created_at) VALUES ('groq', ?, 'success', 200, 100, datetime('now'))").run(groqModel.model_id);
+    }
+    refreshStatsCache(db, true);
+
     const result = routeRequest();
     expect(result.platform).toBe('groq');
     expect(result.apiKey).toBe('test-groq-key');
@@ -48,6 +55,18 @@ describe('Router', () => {
       INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run('groq', 'test', groqKey.encrypted, groqKey.iv, groqKey.authTag, 'healthy', 1);
+
+    // Add request history for dynamic pool calculation
+    const googleModel = db.prepare("SELECT model_id FROM models WHERE platform = 'google' LIMIT 1").get() as { model_id: string } | undefined;
+    const groqModel = db.prepare("SELECT model_id FROM models WHERE platform = 'groq' LIMIT 1").get() as { model_id: string } | undefined;
+    if (googleModel) {
+      db.prepare("INSERT INTO requests (platform, model_id, status, latency_ms, output_tokens, created_at) VALUES ('google', ?, 'success', 200, 100, datetime('now'))").run(googleModel.model_id);
+    }
+    if (groqModel) {
+      db.prepare("INSERT INTO requests (platform, model_id, status, latency_ms, output_tokens, created_at) VALUES ('groq', ?, 'success', 200, 100, datetime('now'))").run(groqModel.model_id);
+    }
+    refreshStatsCache(db, true);
+
     const result = routeRequest();
     expect(['google', 'groq']).toContain(result.platform);
   });
@@ -64,6 +83,14 @@ describe('Router', () => {
       INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run('groq', 'test', groqKey.encrypted, groqKey.iv, groqKey.authTag, 'healthy', 1);
+
+    // Add request history for dynamic pool calculation
+    const groqModel = db.prepare("SELECT model_id FROM models WHERE platform = 'groq' LIMIT 1").get() as { model_id: string } | undefined;
+    if (groqModel) {
+      db.prepare("INSERT INTO requests (platform, model_id, status, latency_ms, output_tokens, created_at) VALUES ('groq', ?, 'success', 200, 100, datetime('now'))").run(groqModel.model_id);
+    }
+    refreshStatsCache(db, true);
+
     const result = routeRequest();
     expect(result.platform).toBe('groq');
     expect(result.apiKey).toBe('test-groq-key');

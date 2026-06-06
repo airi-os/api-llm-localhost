@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vite
 import type { Express } from 'express';
 import type { AddressInfo } from 'net';
 import { createApp } from '../../app.js';
-import { initDb, getDb, getUnifiedApiKey } from '../../db/index.js';
+import { initDb, getUnifiedApiKey } from '../../db/index.js';
 import { streamKeepaliveConfig } from '../../routes/proxy.js';
 import http from 'http';
 
@@ -69,7 +69,7 @@ describe('Stream heartbeat and stall handling', () => {
   it('client disconnect cleans up keepalive timers', async () => {
     const encoder = new TextEncoder();
 
-    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+    vi.spyOn(global, 'fetch').mockImplementation((url, init) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
         return origFetch(url, init);
@@ -145,7 +145,7 @@ describe('Stream heartbeat and stall handling', () => {
     const encoder = new TextEncoder();
 
     // Mock provider that yields a chunk quickly (no idle period)
-    vi.spyOn(global, 'fetch').mockImplementation(async (url: RequestInfo, init?: RequestInit): Promise<Response> => {
+    vi.spyOn(global, 'fetch').mockImplementation((url: RequestInfo, init?: RequestInit): Response => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
         return origFetch(url, init);

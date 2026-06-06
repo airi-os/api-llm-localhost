@@ -17,10 +17,10 @@ describe('Crypto', () => {
 
   it('should produce different ciphertext for same input (random IV)', () => {
     const original = 'same-key';
-    const a = encrypt(original);
-    const b = encrypt(original);
-    expect(a.encrypted).not.toBe(b.encrypted);
-    expect(a.iv).not.toBe(b.iv);
+    const encrypted1 = encrypt(original);
+    const encrypted2 = encrypt(original);
+    expect(encrypted1.encrypted).not.toBe(encrypted2.encrypted);
+    expect(encrypted1.iv).not.toBe(encrypted2.iv);
   });
 
   it('should fail to decrypt with wrong auth tag', () => {

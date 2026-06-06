@@ -68,7 +68,7 @@ describe('GoogleProvider', () => {
 
   it('should translate system messages to systemInstruction', async () => {
     let capturedBody: { systemInstruction: { parts: { text: string }[] }; contents: { role: string; content: string }[] };
-    vi.spyOn(global, 'fetch').mockImplementation(async (_url: string, init: RequestInit) => {
+    vi.spyOn(global, 'fetch').mockImplementation((_url: string, init: RequestInit) => {
       capturedBody = JSON.parse(init.body as string);
       return {
         ok: true,
@@ -99,7 +99,7 @@ describe('GoogleProvider', () => {
       toolConfig: { functionCallingConfig: { mode: string; allowedFunctionNames: string[] } };
     }
     let capturedBody: CapturedBody;
-    vi.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
+    vi.spyOn(global, 'fetch').mockImplementation((_url, init) => {
       capturedBody = JSON.parse((init as RequestInit).body as string) as CapturedBody;
       return {
         ok: true,
@@ -178,7 +178,7 @@ describe('GoogleProvider', () => {
 
   it('should preserve and pass through thought_signature', async () => {
     let capturedBody: unknown;
-    vi.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
+    vi.spyOn(global, 'fetch').mockImplementation((_url, init) => {
       capturedBody = JSON.parse((init as RequestInit).body as string);
       return {
         ok: true,

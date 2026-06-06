@@ -53,6 +53,18 @@ describe('Router Balanced Mode', () => {
     db.prepare("INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled) VALUES ('longcat', 'LC Key', 'enc', 'iv', 'tag', 'healthy', 1)").run();
     db.prepare("INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled) VALUES ('google', 'Google Key', 'enc', 'iv', 'tag', 'healthy', 1)").run();
 
+    // Insert request history to establish performance metrics
+    // LongCat: slow model (tokPerSec ~50, avgTtfbMs ~3000) -> Smart pool
+    // Balanced: fast model (tokPerSec ~500, avgTtfbMs ~500) -> Balanced pool
+    db.prepare(`
+      INSERT INTO requests (platform, model_id, status, latency_ms, output_tokens, ttfb_ms, created_at)
+      VALUES ('longcat', 'lc-test', 'success', 2000, 100, 3000, datetime('now', '-1 day'))
+    `).run();
+    db.prepare(`
+      INSERT INTO requests (platform, model_id, status, latency_ms, output_tokens, ttfb_ms, created_at)
+      VALUES ('google', 'balanced-test', 'success', 200, 100, 500, datetime('now', '-1 day'))
+    `).run();
+
     // Mock ratelimit to allow requests
     (ratelimit.canMakeRequest as jest.Mock).mockReturnValue(true);
     (ratelimit.canUseTokens as jest.Mock).mockReturnValue(true);
@@ -60,7 +72,7 @@ describe('Router Balanced Mode', () => {
     // Call routeRequest in balanced mode (default)
     const result = routeRequest(100);
 
-    // Assert LongCat was NOT selected - should be google
+    // Assert LongCat was NOT selected - should be google (balanced pool)
     expect(result.platform).toBe('google');
     expect(result.modelId).toBe('balanced-test');
   });
@@ -84,6 +96,18 @@ describe('Router Balanced Mode', () => {
     db.prepare("INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled) VALUES ('openrouter', 'OR Key', 'enc', 'iv', 'tag', 'healthy', 1)").run();
     db.prepare("INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled) VALUES ('google', 'Google Key', 'enc', 'iv', 'tag', 'healthy', 1)").run();
 
+    // Insert request history to establish performance metrics
+    // Owl Alpha: slow model (tokPerSec ~50, avgTtfbMs ~3000) -> Smart pool
+    // Balanced: fast model (tokPerSec ~500, avgTtfbMs ~500) -> Balanced pool
+    db.prepare(`
+      INSERT INTO requests (platform, model_id, status, latency_ms, output_tokens, ttfb_ms, created_at)
+      VALUES ('openrouter', 'owl-alpha', 'success', 2000, 100, 3000, datetime('now', '-1 day'))
+    `).run();
+    db.prepare(`
+      INSERT INTO requests (platform, model_id, status, latency_ms, output_tokens, ttfb_ms, created_at)
+      VALUES ('google', 'balanced-test', 'success', 200, 100, 500, datetime('now', '-1 day'))
+    `).run();
+
     // Mock ratelimit to allow requests
     (ratelimit.canMakeRequest as jest.Mock).mockReturnValue(true);
     (ratelimit.canUseTokens as jest.Mock).mockReturnValue(true);
@@ -91,7 +115,7 @@ describe('Router Balanced Mode', () => {
     // Call routeRequest in balanced mode (default)
     const result = routeRequest(100);
 
-    // Assert Owl Alpha was NOT selected - should be google
+    // Assert Owl Alpha was NOT selected - should be google (balanced pool)
     expect(result.platform).toBe('google');
     expect(result.modelId).toBe('balanced-test');
   });
@@ -108,6 +132,13 @@ describe('Router Balanced Mode', () => {
 
     // Insert API key
     db.prepare("INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled) VALUES ('google', 'Google Key', 'enc', 'iv', 'tag', 'healthy', 1)").run();
+
+    // Insert request history to establish performance metrics
+    // Balanced: fast model (tokPerSec ~500, avgTtfbMs ~500) -> Balanced pool
+    db.prepare(`
+      INSERT INTO requests (platform, model_id, status, latency_ms, output_tokens, ttfb_ms, created_at)
+      VALUES ('google', 'balanced-test', 'success', 200, 100, 500, datetime('now', '-1 day'))
+    `).run();
 
     // Mock ratelimit to allow requests
     (ratelimit.canMakeRequest as jest.Mock).mockReturnValue(true);
@@ -139,6 +170,18 @@ describe('Router Balanced Mode', () => {
     // Insert API keys
     db.prepare("INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled) VALUES ('longcat', 'LC Key', 'enc', 'iv', 'tag', 'healthy', 1)").run();
     db.prepare("INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled) VALUES ('google', 'Google Key', 'enc', 'iv', 'tag', 'healthy', 1)").run();
+
+    // Insert request history to establish performance metrics
+    // LongCat: slow model (tokPerSec ~50, avgTtfbMs ~3000) -> Smart pool
+    // Balanced: fast model (tokPerSec ~500, avgTtfbMs ~500) -> Balanced pool
+    db.prepare(`
+      INSERT INTO requests (platform, model_id, status, latency_ms, output_tokens, ttfb_ms, created_at)
+      VALUES ('longcat', 'lc-test', 'success', 2000, 100, 3000, datetime('now', '-1 day'))
+    `).run();
+    db.prepare(`
+      INSERT INTO requests (platform, model_id, status, latency_ms, output_tokens, ttfb_ms, created_at)
+      VALUES ('google', 'balanced-test', 'success', 200, 100, 500, datetime('now', '-1 day'))
+    `).run();
 
     // Mock ratelimit to allow requests
     (ratelimit.canMakeRequest as jest.Mock).mockReturnValue(true);

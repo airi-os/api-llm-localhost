@@ -14,7 +14,7 @@ export class CloudflareProvider extends BaseProvider {
   readonly platform = 'cloudflare' as const;
   readonly name = 'Cloudflare Workers AI';
 
-  private parseKey(apiKey: string): { accountId: string; token: string } {
+  private static parseKey(apiKey: string): { accountId: string; token: string } {
     const sep = apiKey.indexOf(':');
     if (sep === -1) throw new Error('Cloudflare key must be in format "account_id:api_token"');
     return { accountId: apiKey.slice(0, sep), token: apiKey.slice(sep + 1) };
@@ -22,7 +22,7 @@ export class CloudflareProvider extends BaseProvider {
 
   // Cloudflare's OpenAI-compat endpoint rejects `content: null` on assistant
   // messages that carry tool_calls, even though the OpenAI spec allows it.
-  private normalizeMessages(messages: ChatMessage[]): ChatMessage[] {
+  private static normalizeMessages(messages: ChatMessage[]): ChatMessage[] {
     return messages.map(m =>
       m.content === null ? { ...m, content: '' } : m,
     );
@@ -34,10 +34,10 @@ export class CloudflareProvider extends BaseProvider {
     modelId: string,
     options?: CompletionOptions,
   ): Promise<ChatCompletionResponse> {
-    const { accountId, token } = this.parseKey(apiKey);
+    const { accountId, token } = CloudflareProvider.parseKey(apiKey);
     const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1/chat/completions`;
 
-    const res = await this.fetchWithTimeout(url, {
+    const res = await BaseProvider.fetchWithTimeout(url, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${token}`,
@@ -45,7 +45,7 @@ export class CloudflareProvider extends BaseProvider {
       },
       body: JSON.stringify({
         model: modelId,
-        messages: this.normalizeMessages(messages),
+        messages: CloudflareProvider.normalizeMessages(messages),
         temperature: options?.temperature,
         max_tokens: options?.max_tokens,
         top_p: options?.top_p,
@@ -75,10 +75,10 @@ export class CloudflareProvider extends BaseProvider {
     modelId: string,
     options?: CompletionOptions,
   ): AsyncGenerator<ChatCompletionChunk> {
-    const { accountId, token } = this.parseKey(apiKey);
+    const { accountId, token } = CloudflareProvider.parseKey(apiKey);
     const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1/chat/completions`;
 
-    const res = await this.fetchWithTimeout(url, {
+    const res = await BaseProvider.fetchWithTimeout(url, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${token}`,
@@ -86,7 +86,7 @@ export class CloudflareProvider extends BaseProvider {
       },
       body: JSON.stringify({
         model: modelId,
-        messages: this.normalizeMessages(messages),
+        messages: CloudflareProvider.normalizeMessages(messages),
         temperature: options?.temperature,
         max_tokens: options?.max_tokens,
         top_p: options?.top_p,
@@ -138,8 +138,8 @@ export class CloudflareProvider extends BaseProvider {
   async validateKey(apiKey: string): Promise<boolean> {
     // Transport errors propagate — health.ts marks status='error' without
     // counting toward auto-disable. Only confirmed bad/inactive tokens disable.
-    const { token } = this.parseKey(apiKey);
-    const res = await this.fetchWithTimeout(
+    const { token } = CloudflareProvider.parseKey(apiKey);
+    const res = await BaseProvider.fetchWithTimeout(
       'https://api.cloudflare.com/client/v4/user/tokens/verify',
       { method: 'GET', headers: { 'Authorization': `Bearer ${token}` } },
       10000,

@@ -233,8 +233,8 @@ export default function AnalyticsPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {sortModels(byModel, sortKey, sortDir).map((m, i: number) => (
-                        <TableRow key={i}>
+                      {sortModels(byModel, sortKey, sortDir).map((m) => (
+                        <TableRow key={m.displayName}>
                           <TableCell className="pl-4 text-sm font-medium">{m.displayName}</TableCell>
                           <TableCell className="text-xs text-muted-foreground">{m.platform}</TableCell>
                           <TableCell className="text-right tabular-nums text-muted-foreground">{m.intelligenceRank ?? '—'}</TableCell>

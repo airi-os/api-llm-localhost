@@ -46,8 +46,6 @@ analyticsRouter.get('/summary', (req: Request, res: Response) => {
 
   const totalRequests = stats.total_requests ?? 0;
   const successRate = totalRequests > 0 ? (stats.success_count ?? 0) / totalRequests * 100 : 0;
-  const totalTokens = (stats.total_input_tokens ?? 0) + (stats.total_output_tokens ?? 0);
-
   // Estimate cost savings: average ~$3/M input + $15/M output tokens (GPT-4o pricing)
   const inputCost = ((stats.total_input_tokens ?? 0) / 1_000_000) * 3;
   const outputCost = ((stats.total_output_tokens ?? 0) / 1_000_000) * 15;

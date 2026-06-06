@@ -150,9 +150,9 @@ function TokenUsageBar({ data }: { data: TokenUsageData }) {
       </div>
 
       <div className="flex h-2.5 rounded-full overflow-hidden bg-muted">
-        {modelsWithWidth.map((m, i) => (
+        {modelsWithWidth.map((m) => (
           <div
-            key={i}
+            key={m.displayName}
             title={`${m.displayName} (${m.platform}) — ${formatTokens(m.remainingTokens)} remaining`}
             style={{
               width: `${m.widthPct}%`,
@@ -171,8 +171,8 @@ function TokenUsageBar({ data }: { data: TokenUsageData }) {
 
       {expanded && (
         <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-5 gap-y-1.5 text-xs tabular-nums">
-          {modelsWithWidth.map((m, i) => (
-            <div key={i} className="flex items-center gap-2 min-w-0">
+          {modelsWithWidth.map((m) => (
+            <div key={m.displayName} className="flex items-center gap-2 min-w-0">
               <span
                 className="size-2 rounded-sm flex-shrink-0"
                 style={{ backgroundColor: platformColors[m.platform] ?? '#94a3b8' }}
