@@ -76,13 +76,15 @@ export function allocateIp(
   if (existing !== undefined) {
     const alloc = ipPool.get(existing);
     if (alloc && alloc.expiresAt >= now) {
+      // Update allocation details if platform/key changed (e.g., fallback routing)
+      alloc.platform = platform;
+      alloc.keyId = keyId;
+      alloc.expiresAt = now + ttlMs;
       return existing;
     }
-    // Expired — fall through to reallocate
-    if (alloc) {
-      ipPool.delete(existing);
-      sessionIpMap.delete(sessionKey);
-    }
+    // Expired or inconsistent — clean up and fall through to reallocate
+    ipPool.delete(existing);
+    sessionIpMap.delete(sessionKey);
   }
 
   if (platform === 'longcat') {
@@ -132,7 +134,12 @@ export function allocateIp(
 export function releaseIp(sessionKey: string): void {
   const ipIndex = sessionIpMap.get(sessionKey);
   if (ipIndex !== undefined) {
-    ipPool.delete(ipIndex);
+    const alloc = ipPool.get(ipIndex);
+    // Only delete from ipPool if the allocation belongs to this session
+    // (prevents deleting a reallocated IP from a different session)
+    if (alloc && alloc.sessionKey === sessionKey) {
+      ipPool.delete(ipIndex);
+    }
     sessionIpMap.delete(sessionKey);
   }
 }
@@ -159,12 +166,17 @@ export function hasIpCapacity(platform: string, keyId: number): boolean {
     return false;
   }
 
-  // Normal: check if any IP in the key's probe sequence is free
+  // Normal: check if any IP in the key's probe sequence is free.
+  // Only count allocations for the same platform as occupying capacity.
   const keyOffset = keyId % ipCount;
   for (let i = 0; i < ipCount; i++) {
     const candidate = (keyOffset + i) % ipCount;
     const alloc = ipPool.get(candidate);
     if (!alloc || alloc.expiresAt < now) return true;
+    // Occupied by same platform — this slot is taken, continue probing
+    if (alloc.platform === platform) continue;
+    // Occupied by different platform — doesn't contend, slot is usable
+    return true;
   }
   return false;
 }

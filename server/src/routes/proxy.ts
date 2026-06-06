@@ -4,7 +4,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { ChatCompletionChunk, ChatCompletionResponse, ChatMessage, ChatToolCall, ChatToolDefinition } from '@freellmapi/shared/types.js';
 import { routeRequest, recordSuccess, type RouteResult, type RoutingMode } from '../services/router.js';
-import { recordRequest, recordTokens, setCooldown } from '../services/ratelimit.js';
+import { recordRequest, recordTokens, setCooldown, isOnCooldown } from '../services/ratelimit.js';
 import { getDb, getUnifiedApiKey } from '../db/index.js';
 import { allocateIp, releaseIp, hasIpCapacity } from '../services/ipPoolCapacity.js';
 import { extractBearerToken, timingSafeStringEqual } from '../lib/secrets.js';
@@ -297,7 +297,8 @@ proxyRouter.get(/^\/models\/(.+)$/, (req: Request, res: Response) => {
   res.json({ id: model.model_id, object: 'model', created: 0, owned_by: model.platform, name: model.display_name, context_window: model.context_window });
 });
 
-const MAX_RETRIES = parseInt(process.env.MAX_FALLBACK_RETRIES ?? '5', 10);
+const _parsedRetries = parseInt(process.env.MAX_FALLBACK_RETRIES ?? '5', 10);
+const MAX_RETRIES = Number.isFinite(_parsedRetries) && _parsedRetries > 0 ? _parsedRetries : 5;
 
 const toolCallSchema = z.object({
   id: z.string().min(1),
@@ -1279,7 +1280,7 @@ async function handleChatCompletion(
   if (preferredModel) {
     const db = getDb();
     const prefRow = db.prepare('SELECT platform FROM models WHERE id = ?').get(preferredModel);
-    if (prefRow && !hasIpCapacity(prefRow.platform, preferredKeyId)) {
+    if (prefRow && !hasIpCapacity(prefRow.platform, preferredKeyId ?? 0)) {
       preferredModel = undefined;
       preferredKeyId = undefined;
     }
@@ -1346,9 +1347,6 @@ async function handleChatCompletion(
             });
           }
 
-          // AbortController for request-level cancellation on stall
-          const requestAbortController = new AbortController();
-
           const gen = route.provider.streamChatCompletion(
             route.apiKey, normalizedMessages, route.modelId,
             { temperature, max_tokens, top_p, tools, tool_choice, parallel_tool_calls },
@@ -1360,7 +1358,6 @@ async function handleChatCompletion(
           const cleanup = () => {
             clearInterval(keepaliveTimer);
             try { gen.return(); } catch { /* already closed */ }
-            requestAbortController.abort();
           };
 
           const keepaliveTimer = setInterval(() => {
@@ -1415,6 +1412,7 @@ async function handleChatCompletion(
                   writeResponseStreamStart(res, responseStreamContext, route.modelId);
                 }
                 streamStarted = true;
+                if (sessionKey) allocateIp(sessionKey, route.platform, route.keyId);
               }
               const deltaToolCalls = chunk.choices[0]?.delta?.tool_calls ?? [];
               if (deltaToolCalls.length > 0) sawToolCalls = true;
@@ -1507,7 +1505,6 @@ async function handleChatCompletion(
           recordSuccess(route.modelDbId);
           setStickyModel(normalizedMessages, route.modelDbId, routingMode, route.keyId);
           resetAllConsecutiveFailures(normalizedMessages, routingMode);
-          if (sessionKey) allocateIp(sessionKey, route.platform, route.keyId);
           logRequest(route.platform, route.modelId, 'success', estimatedInputTokens, totalOutputTokens, Date.now() - start, ttfbMs, null);
           return;
         } catch (streamErr: unknown) {
@@ -1686,10 +1683,10 @@ async function handleChatCompletion(
          recordSuccess(route.modelDbId);
          setStickyModel(normalizedMessages, route.modelDbId, routingMode, route.keyId);
          resetAllConsecutiveFailures(normalizedMessages, routingMode);
-         if (sessionKey) allocateIp(sessionKey, route.platform, route.keyId);
 
          res.setHeader('X-Routed-Via', `${route.platform}/${route.modelId}`);
          if (attempt > 0) res.setHeader('X-Fallback-Attempts', String(attempt));
+         if (sessionKey) allocateIp(sessionKey, route.platform, route.keyId);
          const responseBody = formatResponse ? formatResponse(result, normalizedMessages) : result;
          res.json(responseBody);
          logFinalModelResponse(route, responseBody, ttfbMs);
@@ -1802,18 +1799,15 @@ async function handleChatCompletion(
                  ).all(route.platform, 'invalid') as Array<{ id: number; rpm: number | null; rpd: number | null; tpm: number | null; tpd: number | null }>;
                  
                  const hasValidKeys = keys.some(key => {
-                   // Check if any key has remaining capacity
-                   const now = Date.now();
-                   const keyCooldown = cooldowns.get(`${route.platform}:${route.modelId}:${key.id}`) || 0;
-                   if (keyCooldown > now) return false;
+                   // Skip keys that are on cooldown
+                   if (isOnCooldown(route.platform, route.modelId, key.id)) return false;
                    
-                   // Simple check: if any limit is null, assume unlimited
+                   // If any limit is null, assume unlimited
                    if (key.rpm === null || key.rpd === null || key.tpm === null || key.tpd === null) {
                      return true;
                    }
                    
-                   // For rate-limited keys, we can't easily check remaining capacity without tracking
-                   // So we'll be conservative and assume the key might still be usable
+                   // For rate-limited keys, be conservative and assume the key might still be usable
                    return true;
                  });
                  
