@@ -71,9 +71,9 @@ describe('Stream heartbeat and stall handling', () => {
 
   beforeEach(() => {
     // Mock ratelimit to allow requests
-    canMakeRequest.mockReturnValue(true);
-    canUseTokens.mockReturnValue(true);
-    isOnCooldown.mockReturnValue(false);
+    vi.mocked(canMakeRequest).mockReturnValue(true);
+    vi.mocked(canUseTokens).mockReturnValue(true);
+    vi.mocked(isOnCooldown).mockReturnValue(false);
     origFetch = global.fetch;
   });
 

@@ -66,8 +66,8 @@ describe('Router Balanced Mode', () => {
     `).run();
 
     // Mock ratelimit to allow requests
-    canMakeRequest.mockReturnValue(true);
-         canUseTokens.mockReturnValue(true);
+    vi.mocked(canMakeRequest).mockReturnValue(true);
+    vi.mocked(canUseTokens).mockReturnValue(true);
 
     // Call routeRequest in balanced mode (default)
     const result = routeRequest(100);

@@ -1279,7 +1279,9 @@ async function handleChatCompletion(
   // clear the sticky preference so the bandit can route elsewhere.
   // Pass sessionKey so re-entrant sessions that already hold an IP
   // are not penalised (they won't consume a new slot).
-  if (preferredModel && !hasIpCapacity(sessionKey)) {
+  // Skip this check when the user explicitly requested a model —
+  // we should never silently override an explicit model choice.
+  if (!requestedModel && preferredModel && !hasIpCapacity(sessionKey)) {
     preferredModel = undefined;
     preferredKeyId = undefined;
   }
@@ -1410,7 +1412,12 @@ async function handleChatCompletion(
                   writeResponseStreamStart(res, responseStreamContext, route.modelId);
                 }
                 streamStarted = true;
-                if (sessionKey) allocateIp(sessionKey, route.platform, route.keyId);
+                if (sessionKey && allocateIp(sessionKey, route.platform, route.keyId) === -1) {
+                  // IP allocation failed (pool full) — clear sticky preference
+                  // so the bandit can route elsewhere on the next attempt.
+                  preferredModel = undefined;
+                  preferredKeyId = undefined;
+                }
               }
               const deltaToolCalls = chunk.choices[0]?.delta?.tool_calls ?? [];
               if (deltaToolCalls.length > 0) sawToolCalls = true;
@@ -1684,7 +1691,12 @@ async function handleChatCompletion(
 
          res.setHeader('X-Routed-Via', `${route.platform}/${route.modelId}`);
          if (attempt > 0) res.setHeader('X-Fallback-Attempts', String(attempt));
-         if (sessionKey) allocateIp(sessionKey, route.platform, route.keyId);
+         if (sessionKey && allocateIp(sessionKey, route.platform, route.keyId) === -1) {
+           // IP allocation failed (pool full) — clear sticky preference
+           // so the bandit can route elsewhere on the next attempt.
+           preferredModel = undefined;
+           preferredKeyId = undefined;
+         }
          const responseBody = formatResponse ? formatResponse(result, normalizedMessages) : result;
          res.json(responseBody);
          logFinalModelResponse(route, responseBody, ttfbMs);

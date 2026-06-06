@@ -113,7 +113,9 @@ export function allocateIp(
 
   // Normal providers: key-based deterministic starting point.
   // keyId % ipCount gives a preferred IP; linear probe finds next free slot.
-  const keyOffset = keyId % ipCount;
+  // Guard against undefined/NaN keyId (e.g., when keyId is optional at call site).
+  const safeKeyId = Number.isFinite(keyId) ? keyId : 0;
+  const keyOffset = safeKeyId % ipCount;
   for (let i = 0; i < ipCount; i++) {
     const candidate = (keyOffset + i) % ipCount;
     const alloc = ipPool.get(candidate);
@@ -170,8 +172,18 @@ export function releaseIp(sessionKey: string): void {
 export function hasIpCapacity(sessionKey?: string): boolean {
   if (!isIpCapacityEnabled()) return true;
 
-  // Re-entrant: if this session already has an IP, it can keep its preference
-  if (sessionKey && sessionIpMap.has(sessionKey)) return true;
+  // Re-entrant: if this session already has an active (non-expired) IP, it can
+  // keep its preference. Expired allocations don't count — the session will
+  // need to compete for a new slot like everyone else.
+  if (sessionKey) {
+    const ipIndex = sessionIpMap.get(sessionKey);
+    if (ipIndex !== undefined) {
+      const alloc = ipPool.get(ipIndex);
+      if (alloc && alloc.sessionKey === sessionKey && alloc.expiresAt >= Date.now()) {
+        return true;
+      }
+    }
+  }
 
   const ipCount = getIpCount();
   const now = Date.now();
