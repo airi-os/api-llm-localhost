@@ -1,7 +1,8 @@
 <div align="center">
 
+# airiOS - Localhost API Layer
 
-# FreeLLMAPI
+<img width="256" height="384" alt="airiOS mascot" src="https://github.com/user-attachments/assets/6d882b19-6ee0-44ab-8ed7-cef9d56bf475" />
 
 **One OpenAI-compatible endpoint. Eleven free LLM providers. ~1B+ tokens per month.**
 
