@@ -11,8 +11,9 @@ Aggregate the free tiers from Google, Groq, Cerebras, SambaNova, NVIDIA, Mistral
 [![CI](https://github.com/tashfeenahmed/freellmapi/actions/workflows/ci.yml/badge.svg)](https://github.com/tashfeenahmed/freellmapi/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
-<br><a href="https://app.deepsource.com/gh/vi70x4/freellmapi/" target="_blank"><img alt="DeepSource" title="DeepSource" src="https://app.deepsource.com/gh/vi70x4/freellmapi.svg/?label=code+coverage&show_trend=true&token=GGGrSfiwPCP9PlhdcRds_pd0"/></a><a href="https://app.deepsource.com/gh/vi70x4/freellmapi/" target="_blank"><img alt="DeepSource" title="DeepSource" src="https://app.deepsource.com/gh/vi70x4/freellmapi.svg/?label=active+issues&show_trend=true&token=GGGrSfiwPCP9PlhdcRds_pd0"/></a><a href="https://app.deepsource.com/gh/vi70x4/freellmapi/" target="_blank"><img alt="DeepSource" title="DeepSource" src="https://app.deepsource.com/gh/vi70x4/freellmapi.svg/?label=resolved+issues&show_trend=true&token=GGGrSfiwPCP9PlhdcRds_pd0"/></a>
-![Live routing stats — score-ranked model table](repo-assets/fallback-chain.png)
+[![DeepSource](https://app.deepsource.com/gh/airi-os/api-localhost.svg/?label=code+coverage&show_trend=true&token=bw6prMMwwfbYh6q3rKiAyKdt)](https://app.deepsource.com/gh/airi-os/api-localhost/)
+[![DeepSource](https://app.deepsource.com/gh/airi-os/api-localhost.svg/?label=active+issues&show_trend=true&token=bw6prMMwwfbYh6q3rKiAyKdt)](https://app.deepsource.com/gh/airi-os/api-localhost/)
+[![DeepSource](https://app.deepsource.com/gh/airi-os/api-localhost.svg/?label=resolved+issues&show_trend=true&token=bw6prMMwwfbYh6q3rKiAyKdt)](https://app.deepsource.com/gh/airi-os/api-localhost/)
 
 </div>
 
@@ -57,8 +58,8 @@ The problem is that stacking them by hand is painful: fourteen different SDKs, f
 <tr>
 <td align="center"><a href="https://cohere.com"><b>Cohere</b><br/>Command R+ · Command-A (trial)</a></td>
 <td align="center"><a href="https://docs.z.ai"><b>Z.ai (Zhipu)</b><br/>GLM-4.5 · GLM-4.7 Flash</a></td>
-<td align="center"><a href="https://build.nvidia.com"><b>NVIDIA</b><br/>NIM (disabled by default)</a></td>
-<td align="center"><i>Adding another? See <a href="#contributing">Contributing</a>.</i></td>
+<td align="center"><a href="https://build.nvidia.com"><b>NVIDIA</b><br/>NIM</a></td>
+<td align="center"><a href="https://longcat.chat/platform"><b>LongCat</b><br/>LongCat 2.0 preview</a></td>
 </tr>
 </table>
 
