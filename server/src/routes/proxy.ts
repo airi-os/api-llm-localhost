@@ -1369,16 +1369,10 @@ async function handleChatCompletion(
                   }
                   res.end();
                 } catch { /* socket gone */ }
-              } else {
-                // Pre-stream stall: throw so the outer catch can retry fallback models
-                throw Object.assign(
-                  new Error(`Stream timed out: no data received from provider ${route.displayName}`),
-                  { status: 504 }
-                );
               }
               return;
             }
-            if (!stalled && elapsed >= streamKeepaliveConfig.KEEPALIVE_INTERVAL_MS) {
+            if (!stalled && streamStarted && elapsed >= streamKeepaliveConfig.KEEPALIVE_INTERVAL_MS) {
               try { res.write(': keep-alive\n\n'); } catch { /* socket gone */ }
             }
           }, streamKeepaliveConfig.KEEPALIVE_INTERVAL_MS);
@@ -1415,6 +1409,15 @@ async function handleChatCompletion(
           } finally {
             res.off('close', cleanup);
             cleanup();
+          }
+
+          // Safe synchronous throw for pre-stream timeouts so the outer catch block
+          // can handle retries safely (throwing inside setInterval causes uncaught exceptions)
+          if (stalled && !streamStarted) {
+            throw Object.assign(
+              new Error(`Stream timed out: no data received from provider ${route.displayName}`),
+              { status: 504 }
+            );
           }
 
           // Check for truncated response content after stream completes.
