@@ -11,9 +11,9 @@ Aggregate the free tiers from Google, Groq, Cerebras, SambaNova, NVIDIA, Mistral
 [![CI](https://github.com/tashfeenahmed/freellmapi/actions/workflows/ci.yml/badge.svg)](https://github.com/tashfeenahmed/freellmapi/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
-[![DeepSource](https://app.deepsource.com/gh/airi-os/api-localhost.svg/?label=code+coverage&show_trend=true&token=bw6prMMwwfbYh6q3rKiAyKdt)](https://app.deepsource.com/gh/airi-os/api-localhost/)
-[![DeepSource](https://app.deepsource.com/gh/airi-os/api-localhost.svg/?label=active+issues&show_trend=true&token=bw6prMMwwfbYh6q3rKiAyKdt)](https://app.deepsource.com/gh/airi-os/api-localhost/)
-[![DeepSource](https://app.deepsource.com/gh/airi-os/api-localhost.svg/?label=resolved+issues&show_trend=true&token=bw6prMMwwfbYh6q3rKiAyKdt)](https://app.deepsource.com/gh/airi-os/api-localhost/)
+[![DeepSource](https://app.deepsource.com/gh/airi-os/api-llm-localhost.svg/?label=code+coverage&show_trend=true&token=bw6prMMwwfbYh6q3rKiAyKdt)](https://app.deepsource.com/gh/airi-os/api-llm-localhost/)
+[![DeepSource](https://app.deepsource.com/gh/airi-os/api-llm-localhost.svg/?label=active+issues&show_trend=true&token=bw6prMMwwfbYh6q3rKiAyKdt)](https://app.deepsource.com/gh/airi-os/api-llm-localhost/)
+[![DeepSource](https://app.deepsource.com/gh/airi-os/api-llm-localhost.svg/?label=resolved+issues&show_trend=true&token=bw6prMMwwfbYh6q3rKiAyKdt)](https://app.deepsource.com/gh/airi-os/api-llm-localhost/)
 
 </div>
 
