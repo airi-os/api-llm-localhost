@@ -1797,20 +1797,9 @@ async function handleChatCompletion(
                  const keys = db.prepare(
                    'SELECT * FROM api_keys WHERE platform = ? AND enabled = 1 AND status != ?'
                  ).all(route.platform, 'invalid') as Array<{ id: number; rpm: number | null; rpd: number | null; tpm: number | null; tpd: number | null }>;
-                 
-                 const hasValidKeys = keys.some(key => {
-                   // Skip keys that are on cooldown
-                   if (isOnCooldown(route.platform, route.modelId, key.id)) return false;
-                   
-                   // If any limit is null, assume unlimited
-                   if (key.rpm === null || key.rpd === null || key.tpm === null || key.tpd === null) {
-                     return true;
-                   }
-                   
-                   // For rate-limited keys, be conservative and assume the key might still be usable
-                   return true;
-                 });
-                 
+
+                 const hasValidKeys = keys.some(key => !isOnCooldown(route.platform, route.modelId, key.id));
+
                  if (!hasValidKeys) {
                    // All keys exhausted, clear preferred model to avoid deadlock
                    preferredModel = undefined;

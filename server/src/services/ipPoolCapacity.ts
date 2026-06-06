@@ -4,8 +4,7 @@
 // does not exceed the available rotating proxy IP pool.
 //
 // Capacity model:
-//   - Normal providers: each key gets a deterministic IP (keyId % ipCount).
-//     Each IP serves 1 session at a time (conservative).
+//   - Each IP slot serves 1 session at a time (conservative).
 //   - LongCat: 1 session per IP (IP-bound regardless of key count).
 //
 // When PROXY_IP_COUNT is unset or 0, all capacity checks pass through
@@ -75,15 +74,17 @@ export function allocateIp(
   const existing = sessionIpMap.get(sessionKey);
   if (existing !== undefined) {
     const alloc = ipPool.get(existing);
-    if (alloc && alloc.expiresAt >= now) {
+    if (alloc && alloc.sessionKey === sessionKey && alloc.expiresAt >= now) {
       // Update allocation details if platform/key changed (e.g., fallback routing)
       alloc.platform = platform;
       alloc.keyId = keyId;
       alloc.expiresAt = now + ttlMs;
       return existing;
     }
-    // Expired or inconsistent — clean up and fall through to reallocate
-    ipPool.delete(existing);
+    // Expired or belongs to different session — clean up and fall through to reallocate
+    if (alloc && alloc.sessionKey === sessionKey) {
+      ipPool.delete(existing);
+    }
     sessionIpMap.delete(sessionKey);
   }
 
@@ -149,8 +150,11 @@ export function releaseIp(sessionKey: string): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Check whether a platform/key combination has IP capacity available.
+ * Check whether there is IP capacity available.
  * Returns true when PROXY_IP_COUNT is unset (no limit).
+ *
+ * Note: This checks global pool occupancy (any platform), consistent with
+ * allocateIp which treats all occupied slots as unavailable.
  */
 export function hasIpCapacity(platform: string, keyId: number): boolean {
   if (!isIpCapacityEnabled()) return true;
@@ -158,25 +162,10 @@ export function hasIpCapacity(platform: string, keyId: number): boolean {
   const ipCount = getIpCount();
   const now = Date.now();
 
-  if (platform === 'longcat') {
-    for (let i = 0; i < ipCount; i++) {
-      const alloc = ipPool.get(i);
-      if (!alloc || alloc.expiresAt < now) return true;
-    }
-    return false;
-  }
-
-  // Normal: check if any IP in the key's probe sequence is free.
-  // Only count allocations for the same platform as occupying capacity.
-  const keyOffset = keyId % ipCount;
+  // Check if any IP slot is free (expired or unallocated)
   for (let i = 0; i < ipCount; i++) {
-    const candidate = (keyOffset + i) % ipCount;
-    const alloc = ipPool.get(candidate);
+    const alloc = ipPool.get(i);
     if (!alloc || alloc.expiresAt < now) return true;
-    // Occupied by same platform — this slot is taken, continue probing
-    if (alloc.platform === platform) continue;
-    // Occupied by different platform — doesn't contend, slot is usable
-    return true;
   }
   return false;
 }
@@ -184,6 +173,9 @@ export function hasIpCapacity(platform: string, keyId: number): boolean {
 /**
  * Return current IP usage for a platform.
  * When IP capacity is disabled, returns { used: 0, max: 0 }.
+ *
+ * Note: max is the global ipCount (shared across platforms).
+ * used is platform-filtered active allocations.
  */
 export function getIpCapacityStatus(platform: string): { used: number; max: number } {
   if (!isIpCapacityEnabled()) return { used: 0, max: 0 };
