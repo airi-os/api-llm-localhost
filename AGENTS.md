@@ -1,5 +1,3 @@
-# CLAUDE.md
-
 ## Commands
 
 ```bash
@@ -19,6 +17,7 @@ pnpm --filter server start                      # start from compiled dist
 **Auto routing modes** (use as the model name in API requests):
 - `freellmapi/auto` — default; balanced routing optimizing for speed, reliability, and intelligence
 - `freellmapi/auto-smart` — prioritizes model capability (60% intelligence weight) for complex reasoning tasks
+- `freellmapi/auto-fast` — routes to lowest latency models (models with `-fast` suffix)
 
 ## Non-obvious invariants
 
