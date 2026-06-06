@@ -173,10 +173,10 @@ fallbackRouter.get('/token-usage', (_req: Request, res: Response) => {
   `).all() as { platform: string; model_id: string; display_name: string; monthly_token_budget: string }[];
 
   function parseBudget(s: string): number {
-    const m = s.match(/~?([\d.]+)(?:-([\d.]+))?([MK])?/);
-    if (!m) return 0;
-    const high = parseFloat(m[2] ?? m[1]);
-    const unit = m[3] === 'M' ? 1_000_000 : m[3] === 'K' ? 1_000 : 1;
+    const match = s.match(/~?([\d.]+)(?:-([\d.]+))?([MK])?/);
+    if (!match) return 0;
+    const high = parseFloat(match[2] ?? match[1]);
+    const unit = match[3] === 'M' ? 1_000_000 : match[3] === 'K' ? 1_000 : 1;
     return high * unit;
   }
 

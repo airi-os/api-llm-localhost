@@ -52,20 +52,11 @@ export function createApp(): Express {
   const app = express();
 
   app.use((req, res, next) => {
-    const start = Date.now();
     const requestUrl = req.originalUrl;
-    let responseBody: unknown;
-    const originalJson = res.json.bind(res);
-
-    res.json = (body: unknown) => {
-      responseBody = body;
-      return originalJson(body);
-    };
 
     res.on('finish', () => {
       if (requestUrl.startsWith('/api/logs')) return;
-      if (isSensitiveLoggingEnabled() && res.statusCode >= 400 && requestUrl.startsWith('/v1/')) {
-      }
+      // sensitive logging handled by downstream middleware
     });
     next();
   });

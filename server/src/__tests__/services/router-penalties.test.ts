@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { routeRequest, recordRateLimitHit, recordSuccess, getAllPenalties, clearAllPenalties } from '../../services/router.js';
-import * as ratelimit from '../../services/ratelimit.js';
+import { canMakeRequest, canUseTokens } from '../../services/ratelimit.js';
 import { getDb, initDb } from '../../db/index.js';
 
 // Mock ratelimit to control quota availability
@@ -55,8 +55,8 @@ describe('Router Penalties', () => {
     db.prepare("INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled) VALUES ('google', 'Key B', 'enc', 'iv', 'tag', 'healthy', 1)").run();
 
     // Mock ratelimit to allow at least one key
-    (ratelimit.canMakeRequest as jest.Mock).mockReturnValue(true);
-    (ratelimit.canUseTokens as jest.Mock).mockReturnValue(true);
+    canMakeRequest.mockReturnValue(true);
+         canUseTokens.mockReturnValue(true);
 
     // Call routeRequest
     const result = routeRequest(100);
@@ -163,8 +163,8 @@ describe('Router Penalties', () => {
     recordRateLimitHit(highId); // penalty = 12, capped at 10
 
     // Mock ratelimit to allow requests
-    (ratelimit.canMakeRequest as jest.Mock).mockReturnValue(true);
-    (ratelimit.canUseTokens as jest.Mock).mockReturnValue(true);
+    canMakeRequest.mockReturnValue(true);
+         canUseTokens.mockReturnValue(true);
 
     // Call routeRequest
     const result = routeRequest(100);
@@ -191,7 +191,7 @@ describe('Router Penalties', () => {
     db.prepare("INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled) VALUES ('google', 'Test Key', 'enc', 'iv', 'tag', 'healthy', 1)").run();
 
     // Mock ratelimit to deny all requests
-    (ratelimit.canMakeRequest as jest.Mock).mockReturnValue(false);
+    canMakeRequest.mockReturnValue(false);
 
     // Call routeRequest and expect it to throw
     expect(() => routeRequest(100)).toThrow(/exhausted/i);

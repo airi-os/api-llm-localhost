@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { routeRequest, recordRateLimitHit, recordSuccess, getAllPenalties, clearAllPenalties } from '../../services/router.js';
-import * as ratelimit from '../../services/ratelimit.js';
+import { routeRequest, recordRateLimitHit, recordSuccess, getAllPenalties, clearAllPenalties, refreshStatsCache } from '../../services/router.js';
+import { canMakeRequest, canUseTokens } from '../../services/ratelimit.js';
 import { getDb, initDb } from '../../db/index.js';
 
 vi.mock('../../services/ratelimit.js', async () => {
@@ -17,7 +17,7 @@ vi.mock('../../lib/crypto.js', async () => {
   const actual = await vi.importActual('../../lib/crypto.js');
   return {
     ...actual,
-    randomBytes: vi.fn(() => Buffer.alloc(32)),
+    decrypt: vi.fn(() => 'mocked-api-key'),
   };
 });
 
@@ -28,41 +28,76 @@ describe('Router Fast Mode', () => {
     vi.clearAllMocks();
 
     // Default: all ratelimit checks pass
-    vi.mocked(ratelimit.canMakeRequest).mockReturnValue(true);
-    vi.mocked(ratelimit.canUseTokens).mockReturnValue(true);
+    canMakeRequest.mockReturnValue(true);
+    canUseTokens.mockReturnValue(true);
 
     const db = getDb();
 
+    // Disable all fallback entries by default
+    db.prepare('UPDATE fallback_config SET enabled = 0').run();
+
+    // Insert Fast pool models
+    db.prepare("INSERT INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, enabled, rpm_limit, tpm_limit) VALUES ('openai', 'openai-fast', 'OpenAI Fast', 5, 1, 1, 1000, 100000)").run();
+    const openaiFastId = (db.prepare("SELECT id FROM models WHERE model_id = 'openai-fast'").get() as { id: number }).id;
+    db.prepare("INSERT INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, enabled, rpm_limit, tpm_limit) VALUES ('google', 'google-fast', 'Google Fast', 5, 1, 1, 1000, 100000)").run();
+    const googleFastId = (db.prepare("SELECT id FROM models WHERE model_id = 'google-fast'").get() as { id: number }).id;
+    db.prepare("INSERT INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, enabled, rpm_limit, tpm_limit) VALUES ('anthropic', 'claude-3-5-haiku', 'Claude Haiku', 4, 1, 1, 1000, 100000)").run();
+    const haikuId = (db.prepare("SELECT id FROM models WHERE model_id = 'claude-3-5-haiku'").get() as { id: number }).id;
+
+    // Insert Balanced pool models
+    db.prepare("INSERT INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, enabled, rpm_limit, tpm_limit) VALUES ('google', 'gemini-2.0-flash', 'Gemini Flash', 3, 2, 1, 1000, 100000)").run();
+    const flashId = (db.prepare("SELECT id FROM models WHERE model_id = 'gemini-2.0-flash'").get() as { id: number }).id;
+    db.prepare("INSERT INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, enabled, rpm_limit, tpm_limit) VALUES ('openai', 'gpt-4o-mini', 'GPT-4o Mini', 3, 2, 1, 1000, 100000)").run();
+    const miniId = (db.prepare("SELECT id FROM models WHERE model_id = 'gpt-4o-mini'").get() as { id: number }).id;
+
+    // Insert Smart pool models
+    db.prepare("INSERT INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, enabled, rpm_limit, tpm_limit) VALUES ('longcat', 'lc-test', 'LongCat Test', 1, 5, 1, 1000, 100000)").run();
+    const lcId = (db.prepare("SELECT id FROM models WHERE model_id = 'lc-test'").get() as { id: number }).id;
+    db.prepare("INSERT INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, enabled, rpm_limit, tpm_limit) VALUES ('anthropic', 'owl-alpha', 'Owl Alpha', 1, 5, 1, 1000, 100000)").run();
+    const owlId = (db.prepare("SELECT id FROM models WHERE model_id = 'owl-alpha'").get() as { id: number }).id;
+
+    // Enable all in fallback
+    db.prepare("INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, 1, 1)").run(openaiFastId);
+    db.prepare("INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, 2, 1)").run(googleFastId);
+    db.prepare("INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, 3, 1)").run(haikuId);
+    db.prepare("INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, 4, 1)").run(flashId);
+    db.prepare("INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, 5, 1)").run(miniId);
+    db.prepare("INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, 6, 1)").run(lcId);
+    db.prepare("INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, 7, 1)").run(owlId);
+
+    // Insert API keys for each platform
+    db.prepare("INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled) VALUES ('openai', 'OpenAI Key', 'enc', 'iv', 'tag', 'healthy', 1)").run();
+    db.prepare("INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled) VALUES ('google', 'Google Key', 'enc', 'iv', 'tag', 'healthy', 1)").run();
+    db.prepare("INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled) VALUES ('anthropic', 'Anthropic Key', 'enc', 'iv', 'tag', 'healthy', 1)").run();
+    db.prepare("INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled) VALUES ('longcat', 'LongCat Key', 'enc', 'iv', 'tag', 'healthy', 1)").run();
+
     // Add request history for dynamic pool calculation
-    // Fast models: tokPerSec >= 5000, avgTtfbMs <= 200
-    // Balanced models: tokPerSec ~500, avgTtfbMs ~500
-    // Smart models: tokPerSec ~50, avgTtfbMs ~3000
-
-    // Fast pool models (openai-fast, google-fast, etc.)
+    // Fast models: tokPerSec >= 40000, avgTtfbMs <= 20 (speed score >= 8)
+    // Formula: speedScore = log(tokPerSec) - log(ttfbMs + 1) * 0.1
     db.prepare(`
       INSERT INTO requests (platform, model_id, status, latency_ms, output_tokens, ttfb_ms, created_at)
-      VALUES ('openai', 'openai-fast', 'success', 100, 100, 150, datetime('now', '-1 day'))
+      VALUES ('openai', 'openai-fast', 'success', 3, 200, 20, datetime('now', '-1 day'))
     `).run();
     db.prepare(`
       INSERT INTO requests (platform, model_id, status, latency_ms, output_tokens, ttfb_ms, created_at)
-      VALUES ('google', 'google-fast', 'success', 100, 100, 150, datetime('now', '-1 day'))
+      VALUES ('google', 'google-fast', 'success', 3, 200, 20, datetime('now', '-1 day'))
     `).run();
     db.prepare(`
       INSERT INTO requests (platform, model_id, status, latency_ms, output_tokens, ttfb_ms, created_at)
-      VALUES ('anthropic', 'claude-3-5-haiku', 'success', 100, 100, 150, datetime('now', '-1 day'))
+      VALUES ('anthropic', 'claude-3-5-haiku', 'success', 3, 200, 20, datetime('now', '-1 day'))
     `).run();
 
-    // Balanced pool models
+    // Balanced pool models: tokPerSec ~500, avgTtfbMs ~10 (speed score 5-8)
     db.prepare(`
       INSERT INTO requests (platform, model_id, status, latency_ms, output_tokens, ttfb_ms, created_at)
-      VALUES ('google', 'gemini-2.0-flash', 'success', 200, 100, 500, datetime('now', '-1 day'))
+      VALUES ('google', 'gemini-2.0-flash', 'success', 200, 100, 10, datetime('now', '-1 day'))
     `).run();
     db.prepare(`
       INSERT INTO requests (platform, model_id, status, latency_ms, output_tokens, ttfb_ms, created_at)
-      VALUES ('openai', 'gpt-4o-mini', 'success', 200, 100, 500, datetime('now', '-1 day'))
+      VALUES ('openai', 'gpt-4o-mini', 'success', 200, 100, 10, datetime('now', '-1 day'))
     `).run();
 
-    // Smart pool models (slow, high quality)
+    // Smart pool models: tokPerSec ~50, avgTtfbMs ~3000 (speed score < 5)
     db.prepare(`
       INSERT INTO requests (platform, model_id, status, latency_ms, output_tokens, ttfb_ms, created_at)
       VALUES ('longcat', 'lc-test', 'success', 2000, 100, 3000, datetime('now', '-1 day'))
@@ -71,35 +106,34 @@ describe('Router Fast Mode', () => {
       INSERT INTO requests (platform, model_id, status, latency_ms, output_tokens, ttfb_ms, created_at)
       VALUES ('anthropic', 'owl-alpha', 'success', 2000, 100, 3000, datetime('now', '-1 day'))
     `).run();
+
+    // Refresh stats cache with the new request history
+    refreshStatsCache(db, true);
   });
 
   it('should only include fast pool models in fast mode', () => {
     const result = routeRequest(100, undefined, undefined, 'fast');
 
     // Fast mode should only route to models in the Fast pool
-    // Fast pool includes models with '-fast' suffix or 'openai-fast'
     expect(result).toBeDefined();
-    expect(result.model_id).toBeDefined();
+    expect(result.modelId).toBeDefined();
 
-    // The model should be a fast model
-    const isFastModel =
-      result.model_id.endsWith('-fast') || result.model_id === 'openai-fast';
-    expect(isFastModel).toBe(true);
+    // The model should be a fast model (openai-fast, google-fast, or claude-3-5-haiku)
+    const fastModels = ['openai-fast', 'google-fast', 'claude-3-5-haiku'];
+    expect(fastModels).toContain(result.modelId);
   });
 
-  it('should exclude non-fast models in fast mode', () => {
+  it('should exclude smart pool models in fast mode', () => {
     const result = routeRequest(100, undefined, undefined, 'fast');
 
-    // Verify the result is not a non-fast model
+    // Verify the result is not a smart pool model
     expect(result).toBeDefined();
-    expect(result.model_id).toBeDefined();
+    expect(result.modelId).toBeDefined();
 
-    // Non-fast models should not be selected
-    const isNonFastModel =
-      result.model_id === 'longcat' ||
-      result.model_id === 'owl-alpha' ||
-      result.model_id === 'anthropic/claude-3-5-sonnet';
-    expect(isNonFastModel).toBe(false);
+    // Smart pool models should not be selected in fast mode
+    // Note: Fast mode includes Fast + Balanced pools (borrowing up)
+    const smartPoolModels = ['lc-test', 'owl-alpha'];
+    expect(smartPoolModels).not.toContain(result.modelId);
   });
 
   it('should use Thompson sampling for model selection in fast mode', () => {
@@ -107,29 +141,34 @@ describe('Router Fast Mode', () => {
     const results: string[] = [];
     for (let i = 0; i < 10; i++) {
       const result = routeRequest(100, undefined, undefined, 'fast');
-      results.push(result.model_id);
+      results.push(result.modelId);
     }
 
     // All results should be fast models
+    const fastModels = ['openai-fast', 'google-fast', 'claude-3-5-haiku'];
     results.forEach(modelId => {
-      const isFastModel =
-        modelId.endsWith('-fast') || modelId === 'openai-fast';
-      expect(isFastModel).toBe(true);
+      expect(fastModels).toContain(modelId);
     });
   });
 
   it('should respect rate limits in fast mode', () => {
-    // Mock rate limit to fail for a specific model
-    vi.mocked(ratelimit.canMakeRequest).mockImplementation((platform, modelId) => {
-      // Block all requests to simulate rate limit
-      return false;
+    // Mock rate limit to fail for fast pool models only
+    canMakeRequest.mockImplementation((platform, modelId) => {
+      // Block fast pool models, allow balanced pool models
+      if (modelId === 'openai-fast' || modelId === 'google-fast' || modelId === 'claude-3-5-haiku') {
+        return false;
+      }
+      return true;
     });
 
     const result = routeRequest(100, undefined, undefined, 'fast');
 
-    // Should still get a result if there are other available models
-    // or handle the rate limit gracefully
+    // Should still get a result from balanced pool via borrowing
     expect(result).toBeDefined();
+    expect(result.modelId).toBeDefined();
+    // Result should be from balanced pool (gemini-2.0-flash or gpt-4o-mini)
+    const balancedModels = ['gemini-2.0-flash', 'gpt-4o-mini'];
+    expect(balancedModels).toContain(result.modelId);
   });
 
   it('should apply penalties in fast mode', () => {
@@ -140,7 +179,7 @@ describe('Router Fast Mode', () => {
 
     // Record a rate limit hit for a fast model
     const result = routeRequest(100, undefined, undefined, 'fast');
-    const modelDbId = result.model_db_id;
+    const modelDbId = result.modelDbId;
 
     recordRateLimitHit(modelDbId);
 
@@ -152,35 +191,37 @@ describe('Router Fast Mode', () => {
     expect(modelPenalty!.count).toBeGreaterThan(0);
   });
 
-  it('should include openai-fast as a fast pool model', () => {
+  it('should include haiku as a fast pool model', () => {
     const result = routeRequest(100, undefined, undefined, 'fast');
 
-    // openai-fast should be a valid fast pool model
+    // haiku should be a valid fast pool model
     expect(result).toBeDefined();
-    expect(result.model_id).toBeDefined();
+    expect(result.modelId).toBeDefined();
 
-    // If openai-fast is available, it should be selected
-    // Otherwise, another fast model should be selected
-    const isFastModel =
-      result.model_id.endsWith('-fast') || result.model_id === 'openai-fast';
-    expect(isFastModel).toBe(true);
+    // The result should be a fast model
+    const fastModels = ['openai-fast', 'google-fast', 'claude-3-5-haiku'];
+    expect(fastModels).toContain(result.modelId);
   });
 
   it('should allow sticky session to override fast mode filtering', () => {
-    // When a sticky session is provided, it should override the fast mode filtering
-    const stickyModelId = 'longcat'; // A non-fast model
+    const db = getDb();
 
-    const result = routeRequest(100, stickyModelId, undefined, 'fast');
+    // Get the model_db_id for lc-test
+    const lcId = (db.prepare("SELECT id FROM models WHERE model_id = 'lc-test'").get() as { id: number }).id;
+
+    // Note: lc-test is a Smart pool model, but sticky session should override
+    // the pool filtering and select it anyway
+    const result = routeRequest(100, undefined, lcId, 'fast');
 
     // Sticky session should take precedence over fast mode filtering
     expect(result).toBeDefined();
     // The sticky model should be selected if it has valid keys
-    expect(result.model_id).toBeDefined();
+    expect(result.modelDbId).toBe(lcId);
   });
 
   it('should reduce penalty on success in fast mode', () => {
     const result = routeRequest(100, undefined, undefined, 'fast');
-    const modelDbId = result.model_db_id;
+    const modelDbId = result.modelDbId;
 
     // Apply a penalty
     recordRateLimitHit(modelDbId);

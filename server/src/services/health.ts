@@ -39,8 +39,7 @@ export async function checkKeyHealth(keyId: number): Promise<KeyStatus> {
     }
 
     return status;
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
+  } catch {
     db.prepare("UPDATE api_keys SET status = ?, last_checked_at = datetime('now') WHERE id = ?")
       .run('error', keyId);
     return 'error';

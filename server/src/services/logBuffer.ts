@@ -36,7 +36,7 @@ function appendToDisk(entry: LogEntry): void {
   try {
     const dataDir = path.dirname(LOG_FILE_PATH);
     if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
-    fs.appendFileSync(LOG_FILE_PATH, JSON.stringify(entry) + '\n');
+    fs.appendFileSync(LOG_FILE_PATH, `${JSON.stringify(entry)}\n`);
   } catch {
     // don't crash the server if logging fails
   }
@@ -59,7 +59,7 @@ function trimDisk(): void {
       .filter(e => e.timestamp >= cutoff)
       .slice(-V1_MAX_ENTRIES);
     if (retained.length < all.length) {
-      fs.writeFileSync(LOG_FILE_PATH, retained.map(e => JSON.stringify(e)).join('\n') + '\n');
+      fs.writeFileSync(LOG_FILE_PATH, `${retained.map(e => JSON.stringify(e)).join('\n')}\n`);
     }
   } catch { /* ignore */ }
 }
@@ -75,7 +75,7 @@ function loadFromDisk(): void {
     }
     if (recent.length < all.length) {
       try {
-        fs.writeFileSync(LOG_FILE_PATH, recent.map(e => JSON.stringify(e)).join('\n') + '\n');
+        fs.writeFileSync(LOG_FILE_PATH, `${recent.map(e => JSON.stringify(e)).join('\n')}\n`);
       } catch { /* ignore */ }
     }
   } catch {

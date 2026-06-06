@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { routeRequest, refreshStatsCache } from '../../services/router.js';
-import * as ratelimit from '../../services/ratelimit.js';
+import { canMakeRequest, canUseTokens } from '../../services/ratelimit.js';
 import { getDb, initDb } from '../../db/index.js';
 
 // Mock ratelimit to control quota availability
@@ -99,8 +99,8 @@ describe('Router Sticky Sessions', () => {
     db.prepare("INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled) VALUES ('google', 'Google Key', 'enc', 'iv', 'tag', 'healthy', 1)").run();
 
     // Mock ratelimit to allow requests
-    (ratelimit.canMakeRequest as jest.Mock).mockReturnValue(true);
-    (ratelimit.canUseTokens as jest.Mock).mockReturnValue(true);
+    canMakeRequest.mockReturnValue(true);
+    canUseTokens.mockReturnValue(true);
 
     // Call routeRequest in balanced mode with sticky session for LongCat
     const result = routeRequest(100, undefined, lcId, 'balanced');
@@ -134,9 +134,8 @@ describe('Router Sticky Sessions', () => {
     db.prepare("INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled) VALUES ('google', 'Test Key', 'enc', 'iv', 'tag', 'healthy', 1)").run();
 
     // Mock ratelimit to allow requests
-    (ratelimit.canMakeRequest as jest.Mock).mockReturnValue(true);
-    (ratelimit.canUseTokens as jest.Mock).mockReturnValue(true);
-
+    canMakeRequest.mockReturnValue(true);
+         canUseTokens.mockReturnValue(true);
     // Call routeRequest multiple times with sticky session
     const result1 = routeRequest(100, undefined, modelId, 'balanced');
     const result2 = routeRequest(100, undefined, modelId, 'balanced');
@@ -181,8 +180,8 @@ describe('Router Sticky Sessions', () => {
     db.prepare("INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled) VALUES ('google', 'Google Key', 'enc', 'iv', 'tag', 'healthy', 1)").run();
 
     // Mock ratelimit to allow requests
-    (ratelimit.canMakeRequest as jest.Mock).mockReturnValue(true);
-    (ratelimit.canUseTokens as jest.Mock).mockReturnValue(true);
+    canMakeRequest.mockReturnValue(true);
+         canUseTokens.mockReturnValue(true);
 
     // Call routeRequest in balanced mode WITHOUT sticky session
     const result = routeRequest(100, undefined, undefined, 'balanced');
@@ -218,8 +217,8 @@ describe('Router Sticky Sessions', () => {
     db.prepare("INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled) VALUES ('google', 'Key B', 'enc', 'iv', 'tag', 'healthy', 1)").run();
 
     // Mock ratelimit to allow requests
-    (ratelimit.canMakeRequest as jest.Mock).mockReturnValue(true);
-    (ratelimit.canUseTokens as jest.Mock).mockReturnValue(true);
+    canMakeRequest.mockReturnValue(true);
+         canUseTokens.mockReturnValue(true);
 
     // Call routeRequest with sticky key
     const result = routeRequest(100, undefined, modelId, 'balanced', undefined, keyAId);

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { routeRequest } from '../../services/router.js';
-import * as ratelimit from '../../services/ratelimit.js';
+import { canMakeRequest, canUseTokens } from '../../services/ratelimit.js';
 import { getDb, initDb } from '../../db/index.js';
 
 // Mock ratelimit to control quota availability
@@ -66,8 +66,8 @@ describe('Router Balanced Mode', () => {
     `).run();
 
     // Mock ratelimit to allow requests
-    (ratelimit.canMakeRequest as jest.Mock).mockReturnValue(true);
-    (ratelimit.canUseTokens as jest.Mock).mockReturnValue(true);
+    canMakeRequest.mockReturnValue(true);
+         canUseTokens.mockReturnValue(true);
 
     // Call routeRequest in balanced mode (default)
     const result = routeRequest(100);
@@ -109,8 +109,8 @@ describe('Router Balanced Mode', () => {
     `).run();
 
     // Mock ratelimit to allow requests
-    (ratelimit.canMakeRequest as jest.Mock).mockReturnValue(true);
-    (ratelimit.canUseTokens as jest.Mock).mockReturnValue(true);
+    canMakeRequest.mockReturnValue(true);
+    canUseTokens.mockReturnValue(true);
 
     // Call routeRequest in balanced mode (default)
     const result = routeRequest(100);
@@ -141,8 +141,8 @@ describe('Router Balanced Mode', () => {
     `).run();
 
     // Mock ratelimit to allow requests
-    (ratelimit.canMakeRequest as jest.Mock).mockReturnValue(true);
-    (ratelimit.canUseTokens as jest.Mock).mockReturnValue(true);
+    canMakeRequest.mockReturnValue(true);
+         canUseTokens.mockReturnValue(true);
 
     // Call routeRequest in balanced mode (default)
     const result = routeRequest(100);
@@ -184,8 +184,8 @@ describe('Router Balanced Mode', () => {
     `).run();
 
     // Mock ratelimit to allow requests
-    (ratelimit.canMakeRequest as jest.Mock).mockReturnValue(true);
-    (ratelimit.canUseTokens as jest.Mock).mockReturnValue(true);
+    canMakeRequest.mockReturnValue(true);
+         canUseTokens.mockReturnValue(true);
 
     // Call routeRequest in balanced mode with sticky session for LongCat
     const result = routeRequest(100, undefined, lcId, 'balanced');

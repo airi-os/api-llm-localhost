@@ -55,10 +55,6 @@ for (const row of models) {
   }
 }
 
-const pad = (s: string, n: number) => s.length > n ? s.slice(0, n - 1) + '…' : s.padEnd(n);
-for (const r of results) {
-  const status = r.ok ? '✓' : '✗';
-}
 const okCount = results.filter(r => r.ok).length;
 
 process.exit(0);

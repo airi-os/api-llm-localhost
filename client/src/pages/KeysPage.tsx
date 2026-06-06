@@ -305,9 +305,9 @@ export default function KeysPage() {
                   </div>
                   <div className="rounded-lg border divide-y bg-card overflow-hidden">
                     {group.keys.map(k => {
-                      const h = healthKeyMap.get(k.id)
-                      const status = h?.status ?? k.status
-                      const lastChecked = h?.lastCheckedAt
+                      const health = healthKeyMap.get(k.id)
+                      const status = health?.status ?? k.status
+                      const lastChecked = health?.lastCheckedAt
                       return (
                         <div key={k.id} className="flex items-center gap-3 px-4 py-3 hover:bg-muted/40 transition-colors">
                           <span className={`size-1.5 rounded-full flex-shrink-0 ${statusDot[status] ?? statusDot.unknown}`} />

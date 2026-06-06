@@ -315,7 +315,7 @@ export default function PlaygroundPage() {
               onInput={e => {
                 const el = e.target as HTMLTextAreaElement
                 el.style.height = 'auto'
-                el.style.height = Math.min(el.scrollHeight, 160) + 'px'
+                el.style.height = `${Math.min(el.scrollHeight, 160)}px`
               }}
             />
             <Button onClick={handleSend} disabled={streaming || !input.trim()} size="default">
