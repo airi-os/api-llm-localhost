@@ -1415,8 +1415,8 @@ async function handleChatCompletion(
                 if (sessionKey && allocateIp(sessionKey, route.platform, route.keyId) === -1) {
                   // IP allocation failed (pool full) — clear sticky preference
                   // so the bandit can route elsewhere on the next attempt.
-                  preferredModel = undefined;
-                  preferredKeyId = undefined;
+                   clearStickyModel(normalizedMessages, routingMode);
+                   clearStickyModel(normalizedMessages, routingMode);
                 }
               }
               const deltaToolCalls = chunk.choices[0]?.delta?.tool_calls ?? [];
@@ -1694,8 +1694,8 @@ async function handleChatCompletion(
          if (sessionKey && allocateIp(sessionKey, route.platform, route.keyId) === -1) {
            // IP allocation failed (pool full) — clear sticky preference
            // so the bandit can route elsewhere on the next attempt.
-           preferredModel = undefined;
-           preferredKeyId = undefined;
+                   clearStickyModel(normalizedMessages, routingMode);
+                   clearStickyModel(normalizedMessages, routingMode);
          }
          const responseBody = formatResponse ? formatResponse(result, normalizedMessages) : result;
          res.json(responseBody);
