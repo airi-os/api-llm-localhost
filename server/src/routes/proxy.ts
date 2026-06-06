@@ -1357,7 +1357,7 @@ async function handleChatCompletion(
 
           const cleanup = () => {
             clearInterval(keepaliveTimer);
-            try { gen.return(); } catch { /* already closed */ }
+            try { gen.return(undefined); } catch { /* already closed */ }
           };
 
           const keepaliveTimer = setInterval(() => {

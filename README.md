@@ -97,23 +97,58 @@ PRs that add any of these are very welcome. See [Contributing](#contributing).
 
 ## Quick start
 
-**Prerequisites:** Node.js 22, [pnpm](https://pnpm.io) (or use [Volta](https://volta.sh) — versions are pinned in `package.json`).
+**Prerequisites:** Node.js 22, [pnpm](https://pnpm.io) (or use [Volta](https://volta.sh) — versions are pinned in `package.json`). For llm-proxy deployment: [Wrangler](https://developers.cloudflare.com/worklers/wrangler/) installed and authenticated.
+
+### Linux / macOS
 
 ```bash
-git clone https://github.com/tashfeenahmed/freellmapi.git
+git clone --recurse-submodules https://github.com/tashfeenahmed/freellmapi.git
 cd freellmapi
-pnpm install
+./install.sh
+```
 
-# Generate an encryption key for at-rest key storage
-cp .env.example .env
-echo "ENCRYPTION_KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")" >> .env
-echo "ADMIN_DASHBOARD_KEY=$(node -e "console.log('freellmapi-admin-' + require('crypto').randomBytes(32).toString('hex'))")" >> .env
+### Windows
 
-# Start server + dashboard together
+```powershell
+git clone --recurse-submodules https://github.com/tashfeenahmed/freellmapi.git
+cd freellmapi
+.\install.ps1
+```
+
+The install script initializes submodules, installs dependencies, validates prerequisites, and runs setup automatically. Setup generates all required secrets and creates `.env` files.
+
+After install completes:
+
+```bash
 pnpm dev
 ```
 
 Open http://localhost:5173 (the Vite dev UI), add your provider keys on the **Keys** page, and grab your unified API key from the **Keys** page header. That unified key is what you point your OpenAI SDK at.
+
+### Deploying llm-proxy (production)
+
+```bash
+cd llm-proxy
+npm run deploy
+```
+
+### Verifying deployment
+
+```bash
+pnpm run verify
+```
+
+### Manual setup (without install script)
+
+If you prefer manual control:
+
+```bash
+git clone --recurse-submodules https://github.com/tashfeenahmed/freellmapi.git
+cd freellmapi
+pnpm install
+cd llm-proxy && npm install && cd ..
+pnpm run setup
+```
 
 For a production build:
 
@@ -123,6 +158,8 @@ node server/dist/index.js     # server + dashboard both served on :3001
 ```
 
 For production, set `ADMIN_DASHBOARD_KEY` in `.env` and keep it private. The dashboard prompts for this key on first load and stores it in browser local storage to authenticate `/api/*` calls. `/v1/*` clients use the separate unified `freellmapi-…` key shown on the Keys page — the two keys cannot cross routes.
+
+**All `.env` variables:**
 
 **All `.env` variables:**
 
