@@ -4,8 +4,9 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { ChatCompletionChunk, ChatCompletionResponse, ChatMessage, ChatToolCall, ChatToolDefinition } from '@freellmapi/shared/types.js';
 import { routeRequest, recordSuccess, type RouteResult, type RoutingMode } from '../services/router.js';
-import { recordRequest, recordTokens, setCooldown } from '../services/ratelimit.js';
+import { recordRequest, recordTokens, setCooldown, isOnCooldown } from '../services/ratelimit.js';
 import { getDb, getUnifiedApiKey } from '../db/index.js';
+import { allocateIpForKey, releaseIpForKey, hasIpCapacity } from '../services/ipPoolCapacity.js';
 import { extractBearerToken, timingSafeStringEqual } from '../lib/secrets.js';
 import { getProtectionLevel, evaluateThreadProtection } from '../services/threadProtection.js';
 import '../services/logBuffer.js';
@@ -15,7 +16,7 @@ export const proxyRouter: Router = Router();
 // Sticky sessions: track which model served each "session"
 // Key: hash of first user message → model_db_id
 // This prevents model switching mid-conversation which causes hallucination
-const stickySessionMap = new Map<string, { modelDbId: number; keyId?: number; bannedPlatforms?: Set<string>; lastUsed: number }>();
+const stickySessionMap = new Map<string, { modelDbId?: number; keyId?: number; bannedPlatforms?: Set<string>; lastUsed: number }>();
 const STICKY_TTL_MS = 30 * 60 * 1000; // 30 min session TTL
 const PROVIDER_BAN_STICKY_COOLDOWN_MS = 3 * 60 * 1000; // 3 min cooldown for provider-ban platform sticky sessions
 const responseSessionMap = new Map<string, { messages: ChatMessage[]; lastUsed: number }>();
@@ -184,7 +185,16 @@ function clearStickyModel(messages: ChatMessage[], routingMode: RoutingMode) {
   const key = getSessionKey(messages, routingMode);
   if (!key) return;
   if (!stickySessionMap.has(key)) return;
-  stickySessionMap.delete(key);
+  
+  const existing = stickySessionMap.get(key);
+  if (existing) {
+    // Preserve ban history while clearing the model/key assignment
+    const { bannedPlatforms } = existing;
+    stickySessionMap.set(key, {
+      bannedPlatforms,
+      lastUsed: Date.now()
+    });
+  }
 }
 
 function clearStickyKey(messages: ChatMessage[], routingMode: RoutingMode) {
@@ -228,6 +238,8 @@ proxyRouter.use((req, res, next) => {
     return;
   }
 
+  // Store the validated API key on the request for use in handlers
+  (req as Request & { apiKey: string }).apiKey = token;
   next();
 });
 
@@ -287,7 +299,8 @@ proxyRouter.get(/^\/models\/(.+)$/, (req: Request, res: Response) => {
   res.json({ id: model.model_id, object: 'model', created: 0, owned_by: model.platform, name: model.display_name, context_window: model.context_window });
 });
 
-const MAX_RETRIES = 20;
+const _parsedRetries = parseInt(process.env.MAX_FALLBACK_RETRIES ?? '5', 10);
+const MAX_RETRIES = Number.isFinite(_parsedRetries) && _parsedRetries > 0 ? _parsedRetries : 5;
 
 const toolCallSchema = z.object({
   id: z.string().min(1),
@@ -1054,6 +1067,7 @@ proxyRouter.post('/responses', async (req: Request, res: Response) => {
   }
 
   const responseStreamContext = parsed.data.stream ? createResponsesStreamContext(messages) : undefined;
+  const apiKey = (req as Request & { apiKey?: string }).apiKey ?? '';
 
   await handleChatCompletion(req, res, (result, normalizedMessages) => formatResponseApiResult(result, normalizedMessages), {
     model: parsed.data.model,
@@ -1065,11 +1079,12 @@ proxyRouter.post('/responses', async (req: Request, res: Response) => {
     tools: normalizeResponseTools(parsed.data.tools),
     tool_choice: parsed.data.tool_choice,
     parallel_tool_calls: parsed.data.parallel_tool_calls,
-  }, responseStreamContext);
+  }, responseStreamContext, apiKey);
 });
 
 proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
-  await handleChatCompletion(req, res);
+  const apiKey = (req as Request & { apiKey?: string }).apiKey ?? '';
+  await handleChatCompletion(req, res, undefined, undefined, undefined, apiKey);
 });
 
 async function handleChatCompletion(
@@ -1078,12 +1093,37 @@ async function handleChatCompletion(
   formatResponse?: ChatResponseFormatter,
   body: unknown = req.body,
   responseStreamContext?: ResponsesStreamContext,
+  apiKey?: string,
 ): Promise<void> {
   const start = Date.now();
+
+  // T2.3: Acquire slot before execution using API key
+  const requestApiKey = apiKey ?? (req as Request & { apiKey?: string }).apiKey ?? '';
+  const allocationResult = allocateIpForKey(requestApiKey);
+  const shouldRelease = allocationResult.kind === 'allocated';
+
+  if (allocationResult.kind === 'key_busy') {
+    res.status(409).json({
+      error: { message: 'An active request already exists for this API key.', type: 'key_busy' },
+    });
+    return;
+  }
+
+  if (allocationResult.kind === 'capacity_exhausted') {
+    res.status(503)
+      .set('Retry-After', '5')
+      .json({
+        error: { message: 'No proxy workers available. All slots are occupied.', type: 'capacity_exhausted' },
+      });
+    return;
+  }
 
   // Validate request
   const parsed = chatCompletionSchema.safeParse(body);
   if (!parsed.success) {
+    if (shouldRelease) {
+      releaseIpForKey(requestApiKey);
+    }
     const message = `Invalid request: ${parsed.error.errors.map(e => e.message).join(', ')}`;
     res.status(400).json({
       error: {
@@ -1264,6 +1304,18 @@ async function handleChatCompletion(
   const skipKeys = new Set<string>();
   let lastError: unknown = null;
 
+  // IP capacity check: if the global IP pool is at capacity,
+  // clear the sticky preference so the bandit can route elsewhere.
+  // Pass sessionKey so re-entrant sessions that already hold an IP
+  // are not penalised (they won't consume a new slot).
+  // Skip this check when the user explicitly requested a model —
+  // we should never silently override an explicit model choice.
+  if (!requestedModel && preferredModel && !hasIpCapacity(requestApiKey)) {
+    preferredModel = undefined;
+    preferredKeyId = undefined;
+  }
+
+  try {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     let route: RouteResult;
     try {
@@ -1285,6 +1337,7 @@ async function handleChatCompletion(
           error: {
             message: `${prefix}. Last error: ${getErrorMessage(lastError)}`,
             type,
+            status,
           },
         });
       } else {
@@ -1334,7 +1387,7 @@ async function handleChatCompletion(
 
           const cleanup = () => {
             clearInterval(keepaliveTimer);
-            try { gen.return(); } catch { /* already closed */ }
+            try { gen.return(undefined); } catch { /* already closed */ }
           };
 
           const keepaliveTimer = setInterval(() => {
@@ -1347,7 +1400,7 @@ async function handleChatCompletion(
               stalled = true;
               cleanup();
               if (streamStarted) {
-                const payload = { error: { message: 'Stream stalled: no data received within timeout', type: 'stream_timeout' } };
+                const payload = { error: { message: 'Stream stalled: no data received within timeout', type: 'stream_timeout', status: 504 } };
                 try {
                   if (responseStreamContext) {
                     writeResponseStreamEvent(res, {
@@ -1389,6 +1442,7 @@ async function handleChatCompletion(
                   writeResponseStreamStart(res, responseStreamContext, route.modelId);
                 }
                 streamStarted = true;
+                // Note: sticky routing slot was already allocated at request start (allocationResult)
               }
               const deltaToolCalls = chunk.choices[0]?.delta?.tool_calls ?? [];
               if (deltaToolCalls.length > 0) sawToolCalls = true;
@@ -1661,6 +1715,7 @@ async function handleChatCompletion(
 
          res.setHeader('X-Routed-Via', `${route.platform}/${route.modelId}`);
          if (attempt > 0) res.setHeader('X-Fallback-Attempts', String(attempt));
+         // Note: sticky routing slot was already allocated at request start (allocationResult)
          const responseBody = formatResponse ? formatResponse(result, normalizedMessages) : result;
          res.json(responseBody);
          logFinalModelResponse(route, responseBody, ttfbMs);
@@ -1700,6 +1755,11 @@ async function handleChatCompletion(
            }
            if (action.skipModel) {
              skipModels.add(route.modelDbId);
+             // Clear preferred model if it matches the model being skipped to avoid deadlock
+             if (preferredModel === route.modelDbId) {
+               preferredModel = undefined;
+               preferredKeyId = undefined;
+             }
            }
            if (action.clearStickyIfPinned && preferredModel) {
              const db = getDb();
@@ -1734,6 +1794,11 @@ async function handleChatCompletion(
            }
            if (action.skipModel) {
              skipModels.add(route.modelDbId);
+             // Clear preferred model if it matches the model being skipped to avoid deadlock
+             if (preferredModel === route.modelDbId) {
+               preferredModel = undefined;
+               preferredKeyId = undefined;
+             }
            }
            if (action.clearStickyIfPinned && preferredModel) {
              const db = getDb();
@@ -1754,6 +1819,21 @@ async function handleChatCompletion(
              // Rate-limit errors: cooldown this key but allow other keys for the same model
              if (isRateLimitError(err)) {
                setCooldown(route.platform, route.modelId, route.keyId, 120_000);
+               // Check if all keys for the preferred model are exhausted
+               if (preferredModel === route.modelDbId) {
+                 const db = getDb();
+                 const keys = db.prepare(
+                   'SELECT * FROM api_keys WHERE platform = ? AND enabled = 1 AND (status != ? OR status IS NULL)'
+                 ).all(route.platform, 'invalid') as Array<{ id: number; rpm: number | null; rpd: number | null; tpm: number | null; tpd: number | null }>;
+
+                 const hasValidKeys = keys.some(key => !isOnCooldown(route.platform, route.modelId, key.id));
+
+                 if (!hasValidKeys) {
+                   // All keys exhausted, clear preferred model to avoid deadlock
+                   preferredModel = undefined;
+                   preferredKeyId = undefined;
+                 }
+               }
              }
            }
         // Auth errors (401/403): clear the sticky key for this session
@@ -1770,13 +1850,21 @@ async function handleChatCompletion(
       // Non-retryable error (auth, etc.): don't retry, but clear sticky so the
       // next request in this conversation isn't pinned to the broken model.
       clearStickyModel(normalizedMessages, routingMode);
-      res.status(502).json({
+      const nonRetryableStatus = getErrorStatus(err) ?? 502;
+      res.status(nonRetryableStatus).json({
         error: {
           message: `Provider error (${route.displayName}): ${getErrorMessage(err)}`,
-          type: 'provider_error',
+          type: nonRetryableStatus === 429 ? 'rate_limit_error' : 'provider_error',
+          status: nonRetryableStatus,
         },
       });
       return;
+    }
+  }
+  } finally {
+    // T2.5: Release worker slot after all retry attempts complete (success or failure)
+    if (shouldRelease) {
+      releaseIpForKey(requestApiKey);
     }
   }
 
@@ -1790,6 +1878,7 @@ async function handleChatCompletion(
     error: {
       message,
       type,
+      status,
     },
   });
 }

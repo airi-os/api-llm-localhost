@@ -99,23 +99,58 @@ PRs that add any of these are very welcome. See [Contributing](#contributing).
 
 ## Quick start
 
-**Prerequisites:** Node.js 22, [pnpm](https://pnpm.io) (or use [Volta](https://volta.sh) — versions are pinned in `package.json`).
+**Prerequisites:** Node.js 22, [pnpm](https://pnpm.io) (or use [Volta](https://volta.sh) — versions are pinned in `package.json`). For llm-proxy deployment: [Wrangler](https://developers.cloudflare.com/worklers/wrangler/) installed and authenticated.
+
+### Linux / macOS
 
 ```bash
-git clone https://github.com/tashfeenahmed/freellmapi.git
+git clone --recurse-submodules https://github.com/tashfeenahmed/freellmapi.git
 cd freellmapi
-pnpm install
+./install.sh
+```
 
-# Generate an encryption key for at-rest key storage
-cp .env.example .env
-echo "ENCRYPTION_KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")" >> .env
-echo "ADMIN_DASHBOARD_KEY=$(node -e "console.log('freellmapi-admin-' + require('crypto').randomBytes(32).toString('hex'))")" >> .env
+### Windows
 
-# Start server + dashboard together
+```powershell
+git clone --recurse-submodules https://github.com/tashfeenahmed/freellmapi.git
+cd freellmapi
+.\install.ps1
+```
+
+The install script initializes submodules, installs dependencies, validates prerequisites, and runs setup automatically. Setup generates all required secrets and creates `.env` files.
+
+After install completes:
+
+```bash
 pnpm dev
 ```
 
 Open http://localhost:5173 (the Vite dev UI), add your provider keys on the **Keys** page, and grab your unified API key from the **Keys** page header. That unified key is what you point your OpenAI SDK at.
+
+### Deploying llm-proxy (production)
+
+```bash
+cd llm-proxy
+npm run deploy
+```
+
+### Verifying deployment
+
+```bash
+pnpm run verify
+```
+
+### Manual setup (without install script)
+
+If you prefer manual control:
+
+```bash
+git clone --recurse-submodules https://github.com/tashfeenahmed/freellmapi.git
+cd freellmapi
+pnpm install
+cd llm-proxy && npm install && cd ..
+pnpm run setup
+```
 
 For a production build:
 
@@ -128,6 +163,8 @@ For production, set `ADMIN_DASHBOARD_KEY` in `.env` and keep it private. The das
 
 **All `.env` variables:**
 
+**All `.env` variables:**
+
 | Variable | Required | Description |
 |---|---|---|
 | `ENCRYPTION_KEY` | Yes | 64-char hex key for AES-256-GCM at-rest key encryption. |
@@ -136,6 +173,24 @@ For production, set `ADMIN_DASHBOARD_KEY` in `.env` and keep it private. The das
 | `DISABLE_HSTS` | No | Set `true` to skip HSTS headers — useful when terminating TLS at a reverse proxy. |
 | `LOG_SENSITIVE_DATA` | No | Set `true` to log full request/response bodies. Off by default; never enable in production. |
 | `PORT` | No | Server port (default `3001`). |
+| `LLM_PROXY_URL` | No | Base URL of the llm-proxy router (e.g. `https://router.example.com`). Enables automatic proxy topology discovery at startup. If unset, `PROXY_IP_COUNT` is used as a static fallback. |
+| `INTERNAL_AUTH_SECRET` | No | Must match llm-proxy's `INTERNAL_AUTH_SECRET`. Required for topology discovery when `LLM_PROXY_URL` is set. |
+| `PROXY_IP_COUNT` | No | Static fallback for the number of proxy workers when topology discovery is unavailable. Defaults to `0` (IP capacity disabled). |
+
+## Proxy Topology Discovery
+
+When `LLM_PROXY_URL` is set, freellmapi-alpha fetches the proxy topology from llm-proxy at startup:
+
+```
+GET /internal/v1/topology
+Header: X-Internal-Auth: <INTERNAL_AUTH_SECRET>
+```
+
+This returns the deployed worker count and proxy list, eliminating the need to manually synchronize `PROXY_IP_COUNT`. The topology is deploy-authoritative — generated once during `npm run deploy` and served as an immutable constant.
+
+**Fallback chain:** dynamic topology → `PROXY_IP_COUNT` env → `0` (disabled)
+
+Existing deployments without `LLM_PROXY_URL` continue to work exactly as before.
 
 ## Using the API
 

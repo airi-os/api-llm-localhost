@@ -4,7 +4,19 @@ import type { AddressInfo } from 'net';
 import { createApp } from '../../app.js';
 import { initDb, getUnifiedApiKey } from '../../db/index.js';
 import { streamKeepaliveConfig } from '../../routes/proxy.js';
+import { canMakeRequest, canUseTokens, isOnCooldown } from '../../services/ratelimit.js';
 import http from 'http';
+
+// Mock ratelimit to allow requests
+vi.mock('../../services/ratelimit.js', async () => {
+  const actual = await vi.importActual('../../services/ratelimit.js');
+  return {
+    ...actual,
+    canMakeRequest: vi.fn(),
+    canUseTokens: vi.fn(),
+    isOnCooldown: vi.fn(),
+  };
+});
 
 function httpRequest(
   app: Express,
@@ -58,6 +70,10 @@ describe('Stream heartbeat and stall handling', () => {
   });
 
   beforeEach(() => {
+    // Mock ratelimit to allow requests
+    vi.mocked(canMakeRequest).mockReturnValue(true);
+    vi.mocked(canUseTokens).mockReturnValue(true);
+    vi.mocked(isOnCooldown).mockReturnValue(false);
     origFetch = global.fetch;
   });
 
@@ -83,10 +99,10 @@ describe('Stream heartbeat and stall handling', () => {
         body: new ReadableStream({
           async start(controller) {
             // Yield one chunk, then wait a long time
-            controller.enqueue(encoder.encode('data: ' + JSON.stringify({
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({
               id: 'chunk-1', object: 'chat.completion.chunk', created: 123, model: reqBody.model,
               choices: [{ index: 0, delta: { role: 'assistant', content: 'start' }, finish_reason: null }],
-            }) + '\n\n'));
+            })}\n\n`));
             await new Promise(r => setTimeout(r, 5000));
             controller.enqueue(encoder.encode('data: [DONE]\n\n'));
             controller.close();
@@ -108,7 +124,7 @@ describe('Stream heartbeat and stall handling', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: 'Bearer ' + getUnifiedApiKey(),
+          Authorization: `Bearer ${getUnifiedApiKey()}`,
         },
       }, (res) => {
         let data = '';
@@ -159,10 +175,10 @@ describe('Stream heartbeat and stall handling', () => {
         ok: true,
         body: new ReadableStream({
           start(controller) {
-            controller.enqueue(encoder.encode('data: ' + JSON.stringify({
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({
               id: 'chunk-1', object: 'chat.completion.chunk', created: 123, model: reqBody.model,
               choices: [{ index: 0, delta: { role: 'assistant', content: 'quick' }, finish_reason: 'stop' }],
-            }) + '\n\n'));
+            })}\n\n`));
             controller.enqueue(encoder.encode('data: [DONE]\n\n'));
             controller.close();
           },

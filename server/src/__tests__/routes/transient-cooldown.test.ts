@@ -171,9 +171,9 @@ describe('Transient model cooldown functionality', () => {
 
     it('multiple active cooldowns are all injected into skipModels', () => {
       const ids = [40, 41, 42];
-      for (const id of ids) {
+      ids.forEach(id => {
         transientModelCooldowns.set(id, Date.now() + TRANSIENT_COOLDOWN_MS);
-      }
+      });
 
       const skipModels = new Set<number>();
       const now = Date.now();
@@ -186,9 +186,9 @@ describe('Transient model cooldown functionality', () => {
       }
 
       expect(skipModels.size).toBe(3);
-      for (const id of ids) {
+      ids.forEach(id => {
         expect(skipModels.has(id)).toBe(true);
-      }
+      });
     });
 
     it('empty cooldown map results in empty skipModels additions', () => {
@@ -328,8 +328,8 @@ describe('Transient model cooldown functionality', () => {
     });
 
     it('undefined preferredModel skips the override check entirely', () => {
-      let preferredModelVar: number | undefined = undefined;
-      let preferredKeyIdVar: number | undefined = undefined;
+      let preferredModelVar: number | undefined;
+      let preferredKeyIdVar: number | undefined;
 
       // Set a cooldown for model 63, but preferredModel is undefined
       transientModelCooldowns.set(63, Date.now() + TRANSIENT_COOLDOWN_MS);

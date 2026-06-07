@@ -30,16 +30,9 @@ for (let i = 0; i < 100; i++) {
 
 
 const providerCounts = new Map<string, number>();
-for (const [idx, label] of order.entries()) {
+for (const [, label] of order.entries()) {
   const provider = label.split('/')[0];
   providerCounts.set(provider, (providerCounts.get(provider) ?? 0) + 1);
 }
 
-const sorted = [...providerCounts.entries()].sort((a, b) => b[1] - a[1]);
-for (const [provider, count] of sorted) {
-  const bar = '█'.repeat(count);
-  const pct = ((count / order.length) * 100).toFixed(0).padStart(3);
-}
-
-const topProvider = order[0]?.split('/')[0];
-const streak = order.findIndex(l => !l.startsWith(topProvider + '/'));
+// Distribution summary available via providerCounts map

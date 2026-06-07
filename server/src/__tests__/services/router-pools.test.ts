@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { routeRequest } from '../../services/router.js';
-import * as ratelimit from '../../services/ratelimit.js';
+import { canMakeRequest, canUseTokens } from '../../services/ratelimit.js';
 import { getDb, initDb } from '../../db/index.js';
 
 // Mock ratelimit to control quota availability
@@ -66,8 +66,8 @@ describe('Router Pool-Based Routing', () => {
     `).run();
 
     // Mock ratelimit to allow requests
-    (ratelimit.canMakeRequest as jest.Mock).mockReturnValue(true);
-    (ratelimit.canUseTokens as jest.Mock).mockReturnValue(true);
+    canMakeRequest.mockReturnValue(true);
+         canUseTokens.mockReturnValue(true);
 
     // Call routeRequest in smart mode
     const result = routeRequest(100, undefined, undefined, 'smart');
@@ -109,8 +109,8 @@ describe('Router Pool-Based Routing', () => {
     `).run();
 
     // Mock ratelimit to allow requests
-    (ratelimit.canMakeRequest as jest.Mock).mockReturnValue(true);
-    (ratelimit.canUseTokens as jest.Mock).mockReturnValue(true);
+    canMakeRequest.mockReturnValue(true);
+         canUseTokens.mockReturnValue(true);
 
     // Call routeRequest in smart mode
     const result = routeRequest(100, undefined, undefined, 'smart');
@@ -163,8 +163,8 @@ describe('Router Pool-Based Routing', () => {
     `).run();
 
     // Mock ratelimit to allow requests
-    (ratelimit.canMakeRequest as jest.Mock).mockReturnValue(true);
-    (ratelimit.canUseTokens as jest.Mock).mockReturnValue(true);
+    canMakeRequest.mockReturnValue(true);
+    canUseTokens.mockReturnValue(true);
 
     // Call routeRequest in balanced mode
     const result = routeRequest(100, undefined, undefined, 'balanced');
@@ -206,11 +206,8 @@ describe('Router Pool-Based Routing', () => {
     `).run();
 
     // Mock ratelimit: LongCat exhausted, Google available
-    (ratelimit.canMakeRequest as jest.Mock).mockImplementation((platform: string) => {
-      if (platform === 'longcat') return false;
-      return true;
-    });
-    (ratelimit.canUseTokens as jest.Mock).mockReturnValue(true);
+    canMakeRequest.mockImplementation((platform: string) => platform !== 'longcat');
+         canUseTokens.mockReturnValue(true);
 
     // Call routeRequest in smart mode - should fail since smart mode doesn't borrow
     // Note: Smart mode NEVER borrows, so this should throw
@@ -259,8 +256,8 @@ describe('Router Pool-Based Routing', () => {
     `).run();
 
     // Mock ratelimit to allow requests
-    (ratelimit.canMakeRequest as jest.Mock).mockReturnValue(true);
-    (ratelimit.canUseTokens as jest.Mock).mockReturnValue(true);
+    canMakeRequest.mockReturnValue(true);
+         canUseTokens.mockReturnValue(true);
 
     // Call routeRequest in smart mode
     const result = routeRequest(100, undefined, undefined, 'smart');
@@ -302,8 +299,8 @@ describe('Router Pool-Based Routing', () => {
     `).run();
 
     // Mock ratelimit to allow requests
-    (ratelimit.canMakeRequest as jest.Mock).mockReturnValue(true);
-    (ratelimit.canUseTokens as jest.Mock).mockReturnValue(true);
+    canMakeRequest.mockReturnValue(true);
+         canUseTokens.mockReturnValue(true);
 
     // Call routeRequest in smart mode
     const result = routeRequest(100, undefined, undefined, 'smart');

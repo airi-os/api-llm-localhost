@@ -4,12 +4,14 @@ import { createApp } from './app.js';
 import { initDb } from './db/index.js';
 import { assertAdminAuthConfigured } from './middleware/adminAuth.js';
 import { startHealthChecker } from './services/health.js';
+import { initialize as initTopology } from './services/proxyTopology.js';
 
 const PORT = process.env.PORT ?? 3001;
 
-function main() {
+async function main() {
   assertAdminAuthConfigured();
   initDb();
+  await initTopology();
   const app = createApp();
 
   const server = app.listen(Number(PORT), '0.0.0.0', () => {

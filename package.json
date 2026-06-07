@@ -6,10 +6,15 @@
     "dev": "concurrently \"pnpm --filter server dev\" \"pnpm --filter client dev\"",
     "test": "pnpm --filter server test && pnpm --filter client test",
     "build": "pnpm --filter server build && pnpm --filter client build",
-    "build:server": "pnpm --filter server build"
+    "build:server": "pnpm --filter server build",
+    "setup": "tsx scripts/setup.ts",
+    "sync-secrets": "tsx scripts/sync-secrets.ts",
+    "verify": "tsx scripts/verify-deploy.ts",
+    "rotate-secrets": "tsx scripts/rotate-secrets.ts"
   },
   "devDependencies": {
-    "concurrently": "^9.1.2"
+    "concurrently": "^9.1.2",
+    "tsx": "^4.22.3"
   },
   "volta": {
     "node": "22.22.3",
