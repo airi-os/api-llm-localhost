@@ -6,7 +6,7 @@ import type { ChatCompletionChunk, ChatCompletionResponse, ChatMessage, ChatTool
 import { routeRequest, recordSuccess, type RouteResult, type RoutingMode } from '../services/router.js';
 import { recordRequest, recordTokens, setCooldown, isOnCooldown } from '../services/ratelimit.js';
 import { getDb, getUnifiedApiKey } from '../db/index.js';
-import { allocateIp, releaseIp, hasIpCapacity } from '../services/ipPoolCapacity.js';
+import { allocateIpForKey, releaseIpForKey, hasIpCapacity } from '../services/ipPoolCapacity.js';
 import { extractBearerToken, timingSafeStringEqual } from '../lib/secrets.js';
 import { getProtectionLevel, evaluateThreadProtection } from '../services/threadProtection.js';
 import '../services/logBuffer.js';
@@ -238,6 +238,8 @@ proxyRouter.use((req, res, next) => {
     return;
   }
 
+  // Store the validated API key on the request for use in handlers
+  (req as Request & { apiKey: string }).apiKey = token;
   next();
 });
 
@@ -1065,6 +1067,7 @@ proxyRouter.post('/responses', async (req: Request, res: Response) => {
   }
 
   const responseStreamContext = parsed.data.stream ? createResponsesStreamContext(messages) : undefined;
+  const apiKey = (req as Request & { apiKey?: string }).apiKey ?? '';
 
   await handleChatCompletion(req, res, (result, normalizedMessages) => formatResponseApiResult(result, normalizedMessages), {
     model: parsed.data.model,
@@ -1076,11 +1079,12 @@ proxyRouter.post('/responses', async (req: Request, res: Response) => {
     tools: normalizeResponseTools(parsed.data.tools),
     tool_choice: parsed.data.tool_choice,
     parallel_tool_calls: parsed.data.parallel_tool_calls,
-  }, responseStreamContext);
+  }, responseStreamContext, apiKey);
 });
 
 proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
-  await handleChatCompletion(req, res);
+  const apiKey = (req as Request & { apiKey?: string }).apiKey ?? '';
+  await handleChatCompletion(req, res, undefined, undefined, undefined, apiKey);
 });
 
 async function handleChatCompletion(
@@ -1089,8 +1093,30 @@ async function handleChatCompletion(
   formatResponse?: ChatResponseFormatter,
   body: unknown = req.body,
   responseStreamContext?: ResponsesStreamContext,
+  apiKey?: string,
 ): Promise<void> {
   const start = Date.now();
+
+  // T2.3: Acquire slot before execution using API key
+  const requestApiKey = apiKey ?? (req as Request & { apiKey?: string }).apiKey ?? '';
+  const allocationResult = allocateIpForKey(requestApiKey);
+  const shouldRelease = allocationResult.kind === 'allocated';
+
+  if (allocationResult.kind === 'key_busy') {
+    res.status(409).json({
+      error: { message: 'An active request already exists for this API key.', type: 'key_busy' },
+    });
+    return;
+  }
+
+  if (allocationResult.kind === 'capacity_exhausted') {
+    res.status(503)
+      .set('Retry-After', '5')
+      .json({
+        error: { message: 'No proxy workers available. All slots are occupied.', type: 'capacity_exhausted' },
+      });
+    return;
+  }
 
   // Validate request
   const parsed = chatCompletionSchema.safeParse(body);
@@ -1281,7 +1307,7 @@ async function handleChatCompletion(
   // are not penalised (they won't consume a new slot).
   // Skip this check when the user explicitly requested a model —
   // we should never silently override an explicit model choice.
-  if (!requestedModel && preferredModel && !hasIpCapacity(sessionKey)) {
+  if (!requestedModel && preferredModel && !hasIpCapacity(requestApiKey)) {
     preferredModel = undefined;
     preferredKeyId = undefined;
   }
@@ -1412,12 +1438,7 @@ async function handleChatCompletion(
                   writeResponseStreamStart(res, responseStreamContext, route.modelId);
                 }
                 streamStarted = true;
-                if (sessionKey && allocateIp(sessionKey, route.platform, route.keyId) === -1) {
-                  // IP allocation failed (pool full) — clear sticky preference
-                  // so the bandit can route elsewhere on the next attempt.
-                   clearStickyModel(normalizedMessages, routingMode);
-                   clearStickyModel(normalizedMessages, routingMode);
-                }
+                // Note: sticky routing slot was already allocated at request start (allocationResult)
               }
               const deltaToolCalls = chunk.choices[0]?.delta?.tool_calls ?? [];
               if (deltaToolCalls.length > 0) sawToolCalls = true;
@@ -1658,7 +1679,10 @@ async function handleChatCompletion(
               }
             }
           }
-          if (sessionKey) releaseIp(sessionKey);
+          // T2.5: Release worker slot in finally block
+          if (shouldRelease) {
+            releaseIpForKey(requestApiKey);
+          }
         }
       } else {
         let result;
@@ -1691,12 +1715,7 @@ async function handleChatCompletion(
 
          res.setHeader('X-Routed-Via', `${route.platform}/${route.modelId}`);
          if (attempt > 0) res.setHeader('X-Fallback-Attempts', String(attempt));
-         if (sessionKey && allocateIp(sessionKey, route.platform, route.keyId) === -1) {
-           // IP allocation failed (pool full) — clear sticky preference
-           // so the bandit can route elsewhere on the next attempt.
-                   clearStickyModel(normalizedMessages, routingMode);
-                   clearStickyModel(normalizedMessages, routingMode);
-         }
+         // Note: sticky routing slot was already allocated at request start (allocationResult)
          const responseBody = formatResponse ? formatResponse(result, normalizedMessages) : result;
          res.json(responseBody);
          logFinalModelResponse(route, responseBody, ttfbMs);
@@ -1718,7 +1737,10 @@ async function handleChatCompletion(
              }
            }
          }
-         if (sessionKey) releaseIp(sessionKey);
+         // T2.5: Release worker slot in finally block
+         if (shouldRelease) {
+           releaseIpForKey(requestApiKey);
+         }
        }
      }
    } catch (err: unknown) {
