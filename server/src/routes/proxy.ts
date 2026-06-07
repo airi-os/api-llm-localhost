@@ -1121,6 +1121,9 @@ async function handleChatCompletion(
   // Validate request
   const parsed = chatCompletionSchema.safeParse(body);
   if (!parsed.success) {
+    if (shouldRelease) {
+      releaseIpForKey(requestApiKey);
+    }
     const message = `Invalid request: ${parsed.error.errors.map(e => e.message).join(', ')}`;
     res.status(400).json({
       error: {
