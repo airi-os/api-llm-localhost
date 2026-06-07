@@ -13,9 +13,12 @@
 //   pnpm run verify -- --dry-run  — report checks without executing
 
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseEnvFile } from './lib/env.js';
 
-const projectRoot = path.resolve(import.meta.dirname, '..');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const projectRoot = path.resolve(__dirname, '..');
 const frellmapiEnvPath = path.join(projectRoot, '.env');
 
 const args = process.argv.slice(2);

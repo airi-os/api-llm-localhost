@@ -63,29 +63,31 @@ export async function initialize(): Promise<void> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), TOPOLOGY_TIMEOUT_MS);
 
-    const res = await fetch(`${proxyUrl}/internal/v1/topology`, {
-      method: 'GET',
-      headers: internalAuth ? { 'X-Internal-Auth': internalAuth } : {},
-      signal: controller.signal,
-    });
+    try {
+      const res = await fetch(`${proxyUrl}/internal/v1/topology`, {
+        method: 'GET',
+        headers: internalAuth ? { 'X-Internal-Auth': internalAuth } : {},
+        signal: controller.signal,
+      });
 
-    clearTimeout(timeout);
+      if (!res.ok) {
+        console.warn(`[topology] fetch failed with status ${res.status}, falling back to static config`);
+        return;
+      }
 
-    if (!res.ok) {
-      console.warn(`[topology] fetch failed with status ${res.status}, falling back to static config`);
-      return;
+      const data: unknown = await res.json();
+
+      if (!isValidTopology(data)) {
+        console.warn('[topology] invalid topology response, falling back to static config');
+        return;
+      }
+
+      cachedSnapshot = data;
+      dynamicAvailable = true;
+      console.log(`[topology] discovered ${data.workerCount} workers`);
+    } finally {
+      clearTimeout(timeout);
     }
-
-    const data: unknown = await res.json();
-
-    if (!isValidTopology(data)) {
-      console.warn('[topology] invalid topology response, falling back to static config');
-      return;
-    }
-
-    cachedSnapshot = data;
-    dynamicAvailable = true;
-    console.log(`[topology] discovered ${data.workerCount} workers`);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.warn(`[topology] unavailable (${message}), falling back to static config`);
