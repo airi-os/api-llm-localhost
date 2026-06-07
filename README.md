@@ -1,6 +1,6 @@
 <div align="center">
 
-# airiOS - Localhost LLM API Layer
+# [airiOS](https://github.com/airi-os/core) - Localhost LLM API Layer
 
 <img width="256" height="384" alt="airiOS mascot" src="https://github.com/user-attachments/assets/6d882b19-6ee0-44ab-8ed7-cef9d56bf475" />
 
