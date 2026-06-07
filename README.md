@@ -4,16 +4,16 @@
 
 <img width="256" height="384" alt="airiOS mascot" src="https://github.com/user-attachments/assets/6d882b19-6ee0-44ab-8ed7-cef9d56bf475" />
 
-**One OpenAI-compatible endpoint. Eleven free LLM providers. ~1B+ tokens per month.**
-
-Aggregate the free tiers from Google, Groq, Cerebras, SambaNova, NVIDIA, Mistral, OpenRouter, GitHub Models, Cohere, Cloudflare, and Z.ai (Zhipu) behind a single `/v1/chat/completions` endpoint. Keys are stored encrypted. A Thompson-sampling bandit router picks the best available model for each request — learning from success rate and speed across providers — falls over to the next when one is rate-limited, and tracks per-key usage so you stay under every free-tier cap.
-
 [![CI](https://github.com/tashfeenahmed/freellmapi/actions/workflows/ci.yml/badge.svg)](https://github.com/tashfeenahmed/freellmapi/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
 [![DeepSource](https://app.deepsource.com/gh/airi-os/api-llm-localhost.svg/?label=code+coverage&show_trend=true&token=bw6prMMwwfbYh6q3rKiAyKdt)](https://app.deepsource.com/gh/airi-os/api-llm-localhost/)
 [![DeepSource](https://app.deepsource.com/gh/airi-os/api-llm-localhost.svg/?label=active+issues&show_trend=true&token=bw6prMMwwfbYh6q3rKiAyKdt)](https://app.deepsource.com/gh/airi-os/api-llm-localhost/)
 [![DeepSource](https://app.deepsource.com/gh/airi-os/api-llm-localhost.svg/?label=resolved+issues&show_trend=true&token=bw6prMMwwfbYh6q3rKiAyKdt)](https://app.deepsource.com/gh/airi-os/api-llm-localhost/)
+
+**One OpenAI-compatible endpoint. Twelve free LLM providers. ~1B+ tokens per month.**
+
+Aggregate the free tiers from Google, Groq, Cerebras, SambaNova, NVIDIA, Mistral, OpenRouter, GitHub Models, Cohere, Cloudflare, Z.ai (Zhipu) and LongCat behind a single `/v1/chat/completions` endpoint. Keys are stored encrypted. A Thompson-sampling bandit router picks the best available model for each request — learning from success rate and speed across providers — falls over to the next when one is rate-limited, and tracks per-key usage so you stay under every free-tier cap.
 
 </div>
 
