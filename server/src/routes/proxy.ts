@@ -1315,6 +1315,7 @@ async function handleChatCompletion(
     preferredKeyId = undefined;
   }
 
+  try {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     let route: RouteResult;
     try {
@@ -1682,10 +1683,6 @@ async function handleChatCompletion(
               }
             }
           }
-          // T2.5: Release worker slot in finally block
-          if (shouldRelease) {
-            releaseIpForKey(requestApiKey);
-          }
         }
       } else {
         let result;
@@ -1739,10 +1736,6 @@ async function handleChatCompletion(
                break;
              }
            }
-         }
-         // T2.5: Release worker slot in finally block
-         if (shouldRelease) {
-           releaseIpForKey(requestApiKey);
          }
        }
      }
@@ -1866,6 +1859,12 @@ async function handleChatCompletion(
         },
       });
       return;
+    }
+  }
+  } finally {
+    // T2.5: Release worker slot after all retry attempts complete (success or failure)
+    if (shouldRelease) {
+      releaseIpForKey(requestApiKey);
     }
   }
 
