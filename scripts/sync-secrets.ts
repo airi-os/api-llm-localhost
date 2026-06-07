@@ -8,9 +8,12 @@
 //   pnpm run sync-secrets -- --dry-run  — report without writing
 
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseEnvFile, updateEnvKey } from './lib/env.js';
 
-const projectRoot = path.resolve(import.meta.dirname, '..');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const projectRoot = path.resolve(__dirname, '..');
 const llmProxyRoot = path.join(projectRoot, 'llm-proxy');
 const frellmapiEnvPath = path.join(projectRoot, '.env');
 const llmProxyEnvPath = path.join(llmProxyRoot, '.env');

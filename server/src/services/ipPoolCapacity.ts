@@ -82,7 +82,10 @@ export function isIpCapacityEnabled(): boolean {
 
 /**
  * Check if sticky routing is enabled.
+/**
+ * Check if sticky routing is enabled.
  * Returns true when either dynamic topology is available or PROXY_IP_COUNT is a valid non-negative integer.
+ * Invalid PROXY_IP_COUNT values (e.g. "abc", "-1") fall back to dynamic topology availability.
  */
 export function isStickyRoutingEnabled(): boolean {
   const raw = process.env.PROXY_IP_COUNT;
@@ -90,7 +93,11 @@ export function isStickyRoutingEnabled(): boolean {
     return isDynamicTopologyAvailable();
   }
   const envCount = Number(raw);
-  return Number.isInteger(envCount) && envCount >= 0;
+  if (!Number.isInteger(envCount) || envCount < 0) {
+    // Invalid value — fall back to dynamic topology
+    return isDynamicTopologyAvailable();
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -105,6 +112,11 @@ export function isStickyRoutingEnabled(): boolean {
  * @returns AllocationResult with kind 'allocated', 'bypass', 'key_busy', or 'capacity_exhausted'
  */
 export function allocateIpForKey(apiKey: string): AllocationResult {
+  // 0. If API key is empty/falsy → bypass (no key to bind to a worker)
+  if (!apiKey) {
+    return { kind: 'bypass' };
+  }
+
   // 1. If sticky routing is disabled → bypass
   if (!isStickyRoutingEnabled()) {
     return { kind: 'bypass' };

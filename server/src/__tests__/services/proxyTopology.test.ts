@@ -45,6 +45,7 @@ function mockFetchError(error: Error) {
 // Tests
 // ---------------------------------------------------------------------------
 
+  const originalFetch = globalThis.fetch;
 describe('proxyTopology', () => {
   const originalProxyUrl = process.env.LLM_PROXY_URL;
   const originalAuth = process.env.INTERNAL_AUTH_SECRET;
@@ -54,6 +55,7 @@ describe('proxyTopology', () => {
     delete process.env.LLM_PROXY_URL;
     delete process.env.INTERNAL_AUTH_SECRET;
     vi.restoreAllMocks();
+    globalThis.fetch = originalFetch;
   });
 
   afterEach(() => {
@@ -70,6 +72,7 @@ describe('proxyTopology', () => {
       delete process.env.INTERNAL_AUTH_SECRET;
     }
     vi.restoreAllMocks();
+    globalThis.fetch = originalFetch;
   });
 
   // ── Configuration ──────────────────────────────────────────────────
