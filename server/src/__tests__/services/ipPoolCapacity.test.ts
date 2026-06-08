@@ -4,7 +4,6 @@ import {
   releaseIpForKey,
   hasIpCapacity,
   getIpCapacityStatus,
-  getIpCount,
   isIpCapacityEnabled,
   cleanupExpired,
   _reset,
@@ -15,88 +14,104 @@ import {
 import { _reset as resetTopology, _setMockTopology } from '../../services/proxyTopology.js';
 
 describe('IP Pool Capacity Manager', () => {
-  // Save and restore env between tests
-  const originalEnv = process.env.PROXY_IP_COUNT;
-
   beforeEach(() => {
     _reset();
     resetTopology();
-    // Default: disabled (no PROXY_IP_COUNT, no mock topology)
-    delete process.env.PROXY_IP_COUNT;
-  });
-
-  afterAll(() => {
-    if (originalEnv !== undefined) {
-      process.env.PROXY_IP_COUNT = originalEnv;
-    } else {
-      delete process.env.PROXY_IP_COUNT;
-    }
   });
 
   // ── Configuration ──────────────────────────────────────────────────
 
-  describe('getIpCount', () => {
-    it('returns 0 when PROXY_IP_COUNT is unset and no topology', () => {
-      delete process.env.PROXY_IP_COUNT;
+  describe('getWorkerCount', () => {
+    it('returns 0 when no topology is available', () => {
       resetTopology();
-      expect(getIpCount()).toBe(0);
+      expect(getWorkerCount()).toBe(0);
     });
 
-    it('returns 0 when PROXY_IP_COUNT is 0', () => {
-      process.env.PROXY_IP_COUNT = '0';
-      expect(getIpCount()).toBe(0);
+    it('returns the topology worker count when available', () => {
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: 5,
+        proxies: [],
+      });
+      expect(getWorkerCount()).toBe(5);
     });
 
-    it('returns 0 when PROXY_IP_COUNT is invalid', () => {
-      process.env.PROXY_IP_COUNT = 'abc';
-      expect(getIpCount()).toBe(0);
-    });
-
-    it('returns the configured value', () => {
-      process.env.PROXY_IP_COUNT = '5';
-      expect(getIpCount()).toBe(5);
+    it('returns 0 when topology has 0 workers', () => {
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: 0,
+        proxies: [],
+      });
+      expect(getWorkerCount()).toBe(0);
     });
   });
 
   describe('isIpCapacityEnabled', () => {
-    it('returns false when unset and no topology', () => {
-      delete process.env.PROXY_IP_COUNT;
+    it('returns false when no topology is available', () => {
       resetTopology();
       expect(isIpCapacityEnabled()).toBe(false);
     });
 
-    it('returns true when set to positive integer', () => {
-      process.env.PROXY_IP_COUNT = '3';
+    it('returns true when topology reports workers', () => {
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: 3,
+        proxies: [],
+      });
       expect(isIpCapacityEnabled()).toBe(true);
     });
 
-    it('returns true when topology is available', () => {
-      delete process.env.PROXY_IP_COUNT;
-      _setMockTopology({ workers: [{ index: 0, url: 'http://localhost:8080' }], workerCount: 1 });
-      expect(isIpCapacityEnabled()).toBe(true);
+    it('returns false when topology has 0 workers', () => {
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: 0,
+        proxies: [],
+      });
+      expect(isIpCapacityEnabled()).toBe(false);
     });
   });
 
   // ── Allocation (allocateIpForKey) ──────────────────────────────────
 
   describe('allocateIpForKey', () => {
-    it('returns bypass when IP capacity is disabled', () => {
-      delete process.env.PROXY_IP_COUNT;
+    it('returns bypass when topology is unavailable', () => {
       resetTopology();
       const result = allocateIpForKey('key-1');
       expect(result.kind).toBe('bypass');
     });
 
     it('allocates when pool has space', () => {
-      process.env.PROXY_IP_COUNT = '3';
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: 3,
+        proxies: [],
+      });
       const result = allocateIpForKey('key-1');
       expect(result.kind).toBe('allocated');
-      expect(result.ipIndex).toBeGreaterThanOrEqual(0);
-      expect(result.ipIndex).toBeLessThan(3);
+      if (result.kind === 'allocated') {
+        expect(result.ipIndex).toBeGreaterThanOrEqual(0);
+        expect(result.ipIndex).toBeLessThan(3);
+      }
     });
 
     it('returns capacity_exhausted when pool is full', () => {
-      process.env.PROXY_IP_COUNT = '2';
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: 2,
+        proxies: [],
+      });
       allocateIpForKey('key-1');
       allocateIpForKey('key-2');
       // Both slots occupied
@@ -105,7 +120,13 @@ describe('IP Pool Capacity Manager', () => {
     });
 
     it('returns key_busy when same key is already allocated', () => {
-      process.env.PROXY_IP_COUNT = '3';
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: 3,
+        proxies: [],
+      });
       allocateIpForKey('key-1');
       // Second allocation for same key should return key_busy
       const result = allocateIpForKey('key-1');
@@ -113,12 +134,20 @@ describe('IP Pool Capacity Manager', () => {
     });
 
     it('allocates different workers for different keys', () => {
-      process.env.PROXY_IP_COUNT = '3';
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: 3,
+        proxies: [],
+      });
       const result1 = allocateIpForKey('key-1');
       const result2 = allocateIpForKey('key-2');
       expect(result1.kind).toBe('allocated');
       expect(result2.kind).toBe('allocated');
-      expect(result1.ipIndex).not.toBe(result2.ipIndex);
+      if (result1.kind === 'allocated' && result2.kind === 'allocated') {
+        expect(result1.ipIndex).not.toBe(result2.ipIndex);
+      }
     });
   });
 
@@ -126,7 +155,13 @@ describe('IP Pool Capacity Manager', () => {
 
   describe('releaseIpForKey', () => {
     it('frees the worker for reuse', () => {
-      process.env.PROXY_IP_COUNT = '1';
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: 1,
+        proxies: [],
+      });
       allocateIpForKey('key-1');
       const result = allocateIpForKey('key-2');
       expect(result.kind).toBe('capacity_exhausted'); // pool full
@@ -138,13 +173,25 @@ describe('IP Pool Capacity Manager', () => {
     });
 
     it('is a no-op when key has no allocation', () => {
-      process.env.PROXY_IP_COUNT = '3';
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: 3,
+        proxies: [],
+      });
       // Should not throw
       expect(() => releaseIpForKey('nonexistent-key')).not.toThrow();
     });
 
     it('re-entrant release is safe', () => {
-      process.env.PROXY_IP_COUNT = '3';
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: 3,
+        proxies: [],
+      });
       allocateIpForKey('key-1');
       releaseIpForKey('key-1');
       releaseIpForKey('key-1'); // second release should not throw
@@ -155,32 +202,55 @@ describe('IP Pool Capacity Manager', () => {
   // ── Capacity Queries ───────────────────────────────────────────────
 
   describe('hasIpCapacity', () => {
-    it('returns true when IP capacity is disabled', () => {
-      delete process.env.PROXY_IP_COUNT;
+    it('returns true when topology is unavailable', () => {
       resetTopology();
       expect(hasIpCapacity()).toBe(true);
     });
 
     it('returns true when pool has space', () => {
-      process.env.PROXY_IP_COUNT = '3';
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: 3,
+        proxies: [],
+      });
       expect(hasIpCapacity()).toBe(true);
     });
 
     it('returns false when pool is full', () => {
-      process.env.PROXY_IP_COUNT = '1';
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: 1,
+        proxies: [],
+      });
       allocateIpForKey('key-1');
       expect(hasIpCapacity()).toBe(false);
     });
 
     it('returns true for re-entrant key that already holds a worker even when pool is full', () => {
-      process.env.PROXY_IP_COUNT = '1';
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: 1,
+        proxies: [],
+      });
       allocateIpForKey('key-1');
       // Pool is full, but key-1 already has allocation
       expect(hasIpCapacity('key-1')).toBe(true);
     });
 
     it('returns false for different key when pool is full', () => {
-      process.env.PROXY_IP_COUNT = '1';
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: 1,
+        proxies: [],
+      });
       allocateIpForKey('key-1');
       // Pool is full, key-2 has no allocation
       expect(hasIpCapacity('key-2')).toBe(false);
@@ -188,8 +258,7 @@ describe('IP Pool Capacity Manager', () => {
   });
 
   describe('getIpCapacityStatus', () => {
-    it('returns { used: 0, max: 0 } when disabled', () => {
-      delete process.env.PROXY_IP_COUNT;
+    it('returns { used: 0, max: 0 } when no topology', () => {
       resetTopology();
       const status = getIpCapacityStatus('google');
       expect(status.used).toBe(0);
@@ -197,7 +266,13 @@ describe('IP Pool Capacity Manager', () => {
     });
 
     it('tracks used count', () => {
-      process.env.PROXY_IP_COUNT = '3';
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: 3,
+        proxies: [],
+      });
       allocateIpForKey('key-1');
       allocateIpForKey('key-2');
 
@@ -210,13 +285,16 @@ describe('IP Pool Capacity Manager', () => {
   // ── Cleanup ─────────────────────────────────────────────────────────
 
   describe('cleanupExpired', () => {
-    it('removes expired allocations', () => {
-      process.env.PROXY_IP_COUNT = '1';
+    it('is a no-op (expiration handled by releaseIpForKey)', () => {
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: 1,
+        proxies: [],
+      });
       allocateIpForKey('key-1');
 
-      // Simulate time passing (TTL is 5 minutes by default)
-      // For testing, we need to manually expire or use a shorter TTL
-      // This test verifies the cleanup function exists and can be called
       cleanupExpired();
 
       const status = getIpCapacityStatus('google');
@@ -225,7 +303,13 @@ describe('IP Pool Capacity Manager', () => {
     });
 
     it('does not remove active allocations', () => {
-      process.env.PROXY_IP_COUNT = '3';
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: 3,
+        proxies: [],
+      });
       allocateIpForKey('key-1');
 
       cleanupExpired();
@@ -239,7 +323,13 @@ describe('IP Pool Capacity Manager', () => {
 
   describe('edge cases', () => {
     it('handles rapid allocate/release cycles', () => {
-      process.env.PROXY_IP_COUNT = '2';
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: 2,
+        proxies: [],
+      });
       for (let i = 0; i < 10; i++) {
         const key = `key-${i}`;
         const result = allocateIpForKey(key);
@@ -249,7 +339,13 @@ describe('IP Pool Capacity Manager', () => {
     });
 
     it('handles many different keys independently', () => {
-      process.env.PROXY_IP_COUNT = '3';
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: 3,
+        proxies: [],
+      });
       allocateIpForKey('key-1');
       allocateIpForKey('key-2');
 
@@ -261,45 +357,73 @@ describe('IP Pool Capacity Manager', () => {
   });
 
   // ══════════════════════════════════════════════════════════════════════
-  // Phase 4: API-Key-Based Allocation Tests (T4.1–T4.13)
+  // Phase 4+5: Topology-Only Worker Count Tests
   // ══════════════════════════════════════════════════════════════════════
 
-  describe('Phase 4: API-Key-Based Allocation (T4.1–T4.13)', () => {
+  describe('Phase 4+5: Topology-only worker count', () => {
     const POOL_SIZE = 3;
 
-    // T4.1 — Single allocation success
-    it('T4.1 — allocates worker for first request', () => {
+    // Single allocation success
+    it('allocates worker for first request', () => {
       _resetAssignments();
-      process.env.PROXY_IP_COUNT = String(POOL_SIZE);
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: POOL_SIZE,
+        proxies: [],
+      });
       const result = allocateIpForKey('key-1');
       expect(result.kind).toBe('allocated');
-      expect(result.ipIndex).toBeGreaterThanOrEqual(0);
+      if (result.kind === 'allocated') {
+        expect(result.ipIndex).toBeGreaterThanOrEqual(0);
+      }
     });
 
-    // T4.2 — Same key concurrent → 409
-    it('T4.2 — rejects same key concurrent request with 409', () => {
+    // Same key concurrent → key_busy
+    it('rejects same key concurrent request with key_busy', () => {
       _resetAssignments();
-      process.env.PROXY_IP_COUNT = String(POOL_SIZE);
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: POOL_SIZE,
+        proxies: [],
+      });
       allocateIpForKey('key-1');
       const result = allocateIpForKey('key-1');
       expect(result.kind).toBe('key_busy');
     });
 
-    // T4.3 — Different keys until full
-    it('T4.3 — allocates different workers for different keys', () => {
+    // Different keys until full
+    it('allocates different workers for different keys', () => {
       _resetAssignments();
-      process.env.PROXY_IP_COUNT = String(POOL_SIZE);
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: POOL_SIZE,
+        proxies: [],
+      });
       const r1 = allocateIpForKey('key-1');
       const r2 = allocateIpForKey('key-2');
       expect(r1.kind).toBe('allocated');
       expect(r2.kind).toBe('allocated');
-      expect(r1.ipIndex).not.toBe(r2.ipIndex);
+      if (r1.kind === 'allocated' && r2.kind === 'allocated') {
+        expect(r1.ipIndex).not.toBe(r2.ipIndex);
+      }
     });
 
-    // T4.4 — Pool exhausted → 503
-    it('T4.4 — rejects new key when pool is full with 503', () => {
+    // Pool exhausted → capacity_exhausted
+    it('rejects new key when pool is full with capacity_exhausted', () => {
       _resetAssignments();
-      process.env.PROXY_IP_COUNT = String(POOL_SIZE);
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: POOL_SIZE,
+        proxies: [],
+      });
       for (let i = 0; i < POOL_SIZE; i++) {
         allocateIpForKey(`key-${i}`);
       }
@@ -307,10 +431,16 @@ describe('IP Pool Capacity Manager', () => {
       expect(result.kind).toBe('capacity_exhausted');
     });
 
-    // T4.5 — Release restores capacity
-    it('T4.5 — releases worker and restores capacity', () => {
+    // Release restores capacity
+    it('releases worker and restores capacity', () => {
       _resetAssignments();
-      process.env.PROXY_IP_COUNT = String(POOL_SIZE);
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: POOL_SIZE,
+        proxies: [],
+      });
       const r1 = allocateIpForKey('key-1');
       expect(r1.kind).toBe('allocated');
       releaseIpForKey('key-1');
@@ -318,10 +448,16 @@ describe('IP Pool Capacity Manager', () => {
       expect(r2.kind).toBe('allocated');
     });
 
-    // T4.6 — Exception path releases slot
-    it('T4.6 — releases worker even when request throws', () => {
+    // Exception path releases slot
+    it('releases worker even when request throws', () => {
       _resetAssignments();
-      process.env.PROXY_IP_COUNT = String(POOL_SIZE);
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: POOL_SIZE,
+        proxies: [],
+      });
       allocateIpForKey('key-1');
       try {
         throw new Error('simulated');
@@ -333,37 +469,52 @@ describe('IP Pool Capacity Manager', () => {
       expect(_getActiveAssignmentCount()).toBe(0);
     });
 
-    // T4.7 — Disabled mode bypass
-    it('T4.7 — bypasses allocation when sticky routing is disabled', () => {
+    // Disabled mode bypass (no topology)
+    it('bypasses allocation when topology is unavailable', () => {
       _resetAssignments();
-      // No PROXY_IP_COUNT, no topology → disabled
-      delete process.env.PROXY_IP_COUNT;
       resetTopology();
       const result = allocateIpForKey('key-1');
       expect(result.kind).toBe('bypass');
     });
 
-    // T4.8 — workerCount=0 → 503 (not bypass)
-    it('T4.8 — returns capacity_exhausted when workerCount=0', () => {
+    // workerCount=0 → capacity_exhausted (not bypass)
+    it('returns capacity_exhausted when workerCount=0', () => {
       _resetAssignments();
-      // PROXY_IP_COUNT=0 → getWorkerCount()=0, isStickyRoutingEnabled()=true (0 is valid non-negative)
-      process.env.PROXY_IP_COUNT = '0';
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: 0,
+        proxies: [],
+      });
       const result = allocateIpForKey('key-1');
       expect(result.kind).toBe('capacity_exhausted');
     });
 
-    // T4.9 — No worker leaks after failures
-    it('T4.9a — no worker leaks after key_busy rejection', () => {
+    // No worker leaks after failures
+    it('no worker leaks after key_busy rejection', () => {
       _resetAssignments();
-      process.env.PROXY_IP_COUNT = String(POOL_SIZE);
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: POOL_SIZE,
+        proxies: [],
+      });
       allocateIpForKey('key-1');
       allocateIpForKey('key-1');
       expect(_getActiveAssignmentCount()).toBe(1);
     });
 
-    it('T4.9b — no worker leaks after capacity_exhausted rejection', () => {
+    it('no worker leaks after capacity_exhausted rejection', () => {
       _resetAssignments();
-      process.env.PROXY_IP_COUNT = String(POOL_SIZE);
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: POOL_SIZE,
+        proxies: [],
+      });
       for (let i = 0; i < POOL_SIZE; i++) {
         allocateIpForKey(`key-${i}`);
       }
@@ -371,10 +522,16 @@ describe('IP Pool Capacity Manager', () => {
       expect(_getActiveAssignmentCount()).toBe(POOL_SIZE);
     });
 
-    // T4.10 — Router integration: 409 on concurrent same-key requests
-    it('T4.10 — returns 409 for concurrent same-key requests', () => {
+    // Router integration: key_busy on concurrent same-key requests
+    it('returns key_busy for concurrent same-key requests', () => {
       _resetAssignments();
-      process.env.PROXY_IP_COUNT = String(POOL_SIZE);
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: POOL_SIZE,
+        proxies: [],
+      });
       const firstResult = allocateIpForKey('test-key');
       expect(firstResult.kind).toBe('allocated');
       const secondResult = allocateIpForKey('test-key');
@@ -384,10 +541,16 @@ describe('IP Pool Capacity Manager', () => {
       expect(thirdResult.kind).toBe('allocated');
     });
 
-    // T4.11 — Router integration: 503 when all workers occupied
-    it('T4.11 — returns 503 when all workers are occupied', () => {
+    // Router integration: capacity_exhausted when all workers occupied
+    it('returns capacity_exhausted when all workers are occupied', () => {
       _resetAssignments();
-      process.env.PROXY_IP_COUNT = String(POOL_SIZE);
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: POOL_SIZE,
+        proxies: [],
+      });
       const keys = Array.from({ length: POOL_SIZE }, (_, i) => `key-${i}`);
       keys.forEach(key => {
         const result = allocateIpForKey(key);
@@ -400,10 +563,16 @@ describe('IP Pool Capacity Manager', () => {
       expect(retryResult.kind).toBe('allocated');
     });
 
-    // T4.12 — Router integration: Exception cleanup
-    it('T4.12 — releases worker on exception', () => {
+    // Router integration: Exception cleanup
+    it('releases worker on exception', () => {
       _resetAssignments();
-      process.env.PROXY_IP_COUNT = String(POOL_SIZE);
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: POOL_SIZE,
+        proxies: [],
+      });
       const result = allocateIpForKey('test-key');
       expect(result.kind).toBe('allocated');
       let exceptionThrown = false;
@@ -420,23 +589,36 @@ describe('IP Pool Capacity Manager', () => {
       expect(newResult.kind).toBe('allocated');
     });
 
-    // T4.13 — Invalid PROXY_IP_COUNT values → disabled mode
-    it('T4.13a — treats invalid PROXY_IP_COUNT as disabled', () => {
+    // Topology-only: no PROXY_IP_COUNT fallback
+    it('ignores PROXY_IP_COUNT env var — uses topology only', () => {
       _resetAssignments();
-      const invalidValues = ['abc', '-1', '1.5', ''];
-      invalidValues.forEach(value => {
-        process.env.PROXY_IP_COUNT = value;
-        const result = allocateIpForKey('key-1');
-        expect(result.kind).toBe('bypass');
-        delete process.env.PROXY_IP_COUNT;
-      });
+      // Set PROXY_IP_COUNT but no topology → should bypass (not use PROXY_IP_COUNT)
+      process.env.PROXY_IP_COUNT = '5';
+      resetTopology();
+      const result = allocateIpForKey('key-1');
+      expect(result.kind).toBe('bypass');
+      delete process.env.PROXY_IP_COUNT;
     });
 
-    it('T4.13b — accepts valid PROXY_IP_COUNT values', () => {
+    it('uses topology worker count even when PROXY_IP_COUNT is set', () => {
       _resetAssignments();
-      process.env.PROXY_IP_COUNT = '3';
-      const result = allocateIpForKey('key-1');
-      expect(result.kind).toBe('allocated');
+      process.env.PROXY_IP_COUNT = '10';
+      _setMockTopology({
+        schemaVersion: 1,
+        topologyId: 'test',
+        topologyGeneratedAt: Date.now(),
+        workerCount: 2,
+        proxies: [],
+      });
+      // Should use topology count (2), not PROXY_IP_COUNT (10)
+      expect(getWorkerCount()).toBe(2);
+      // Fill 2 slots
+      allocateIpForKey('key-1');
+      allocateIpForKey('key-2');
+      // Third should be exhausted (not have 10 slots)
+      const result = allocateIpForKey('key-3');
+      expect(result.kind).toBe('capacity_exhausted');
+      delete process.env.PROXY_IP_COUNT;
     });
   });
 });

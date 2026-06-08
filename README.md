@@ -26,6 +26,7 @@ Aggregate the free tiers from Google, Groq, Cerebras, SambaNova, NVIDIA, Mistral
 - [Features](#features)
 - [Not yet supported](#not-yet-supported)
 - [Quick start](#quick-start)
+- [Advanced configuration](#advanced-configuration)
 - [Using the API](#using-the-api)
 - [Screenshots](#screenshots)
 - [How it works](#how-it-works)
@@ -99,50 +100,61 @@ PRs that add any of these are very welcome. See [Contributing](#contributing).
 
 ## Quick start
 
-**Prerequisites:** Node.js 22, [pnpm](https://pnpm.io) (or use [Volta](https://volta.sh) — versions are pinned in `package.json`). For llm-proxy deployment: [Wrangler](https://developers.cloudflare.com/worklers/wrangler/) installed and authenticated.
+1. Install [Node.js](https://nodejs.org/) 22+
+2. Run `wrangler login`
+3. Run `./install.sh` (Linux/macOS) or `.\install.ps1` (Windows)
+4. Run `pnpm dev`
 
-### Linux / macOS
-
-```bash
-git clone --recurse-submodules https://github.com/tashfeenahmed/freellmapi.git
-cd freellmapi
-./install.sh
-```
-
-### Windows
-
-```powershell
-git clone --recurse-submodules https://github.com/tashfeenahmed/freellmapi.git
-cd freellmapi
-.\install.ps1
-```
-
-The install script initializes submodules, installs dependencies, validates prerequisites, and runs setup automatically. Setup generates all required secrets and creates `.env` files.
-
-After install completes:
-
-```bash
-pnpm dev
-```
+That's it. The installer handles everything:
+- Deploys llm-proxy to Cloudflare Workers
+- Configures all secrets automatically
+- Sets up the database
+- Verifies the deployment
 
 Open http://localhost:5173 (the Vite dev UI), add your provider keys on the **Keys** page, and grab your unified API key from the **Keys** page header. That unified key is what you point your OpenAI SDK at.
 
-### Deploying llm-proxy (production)
+## Advanced configuration
+
+### Install script flags
+
+The install script supports several flags for manual control:
+
+| Flag | Description |
+|---|---|
+| `--interactive` | Manual control over each setup step (prompts for secrets, deployment, etc.) |
+| `--regenerate` | Rotate all secrets and re-deploy (useful for key rotation) |
+| `--dry-run` | Preview all actions without making changes |
+
+### Manual commands
+
+For users who want to run steps individually:
 
 ```bash
-cd llm-proxy
-npm run deploy
-```
+# Run setup with manual prompts
+pnpm run setup -- --interactive
 
-### Verifying deployment
+# Preview setup actions without executing
+pnpm run setup -- --dry-run
 
-```bash
+# Re-deploy llm-proxy to Cloudflare Workers
+pnpm run deploy-proxy
+
+# Re-deploy with a dry run
+pnpm run deploy-proxy -- --dry-run
+
+# Reconcile topology after scaling proxy workers
+pnpm run reconcile-topology
+
+# Verify deployment health
 pnpm run verify
+
+# Verify with a dry run
+pnpm run verify -- --dry-run
 ```
 
 ### Manual setup (without install script)
 
-If you prefer manual control:
+If you prefer full manual control:
 
 ```bash
 git clone --recurse-submodules https://github.com/tashfeenahmed/freellmapi.git
@@ -160,37 +172,6 @@ node server/dist/index.js     # server + dashboard both served on :3001
 ```
 
 For production, set `ADMIN_DASHBOARD_KEY` in `.env` and keep it private. The dashboard prompts for this key on first load and stores it in browser local storage to authenticate `/api/*` calls. `/v1/*` clients use the separate unified `freellmapi-…` key shown on the Keys page — the two keys cannot cross routes.
-
-**All `.env` variables:**
-
-**All `.env` variables:**
-
-| Variable | Required | Description |
-|---|---|---|
-| `ENCRYPTION_KEY` | Yes | 64-char hex key for AES-256-GCM at-rest key encryption. |
-| `ADMIN_DASHBOARD_KEY` | Yes (prod) | Bearer token for all `/api/*` dashboard routes. Min 24 chars. Omitting it only works in `NODE_ENV=development`. |
-| `ADMIN_CORS_ORIGINS` | No | Comma-separated browser origins allowed to call `/api/*` cross-origin (e.g. `http://localhost:5173`). Same-origin deployments don't need this. |
-| `DISABLE_HSTS` | No | Set `true` to skip HSTS headers — useful when terminating TLS at a reverse proxy. |
-| `LOG_SENSITIVE_DATA` | No | Set `true` to log full request/response bodies. Off by default; never enable in production. |
-| `PORT` | No | Server port (default `3001`). |
-| `LLM_PROXY_URL` | No | Base URL of the llm-proxy router (e.g. `https://router.example.com`). Enables automatic proxy topology discovery at startup. If unset, `PROXY_IP_COUNT` is used as a static fallback. |
-| `INTERNAL_AUTH_SECRET` | No | Must match llm-proxy's `INTERNAL_AUTH_SECRET`. Required for topology discovery when `LLM_PROXY_URL` is set. |
-| `PROXY_IP_COUNT` | No | Static fallback for the number of proxy workers when topology discovery is unavailable. Defaults to `0` (IP capacity disabled). |
-
-## Proxy Topology Discovery
-
-When `LLM_PROXY_URL` is set, freellmapi-alpha fetches the proxy topology from llm-proxy at startup:
-
-```
-GET /internal/v1/topology
-Header: X-Internal-Auth: <INTERNAL_AUTH_SECRET>
-```
-
-This returns the deployed worker count and proxy list, eliminating the need to manually synchronize `PROXY_IP_COUNT`. The topology is deploy-authoritative — generated once during `npm run deploy` and served as an immutable constant.
-
-**Fallback chain:** dynamic topology → `PROXY_IP_COUNT` env → `0` (disabled)
-
-Existing deployments without `LLM_PROXY_URL` continue to work exactly as before.
 
 ## Using the API
 
@@ -321,28 +302,28 @@ Request volume, success rate, tokens in and out, average latency, and per-provid
 │  curl / any      │ ◀────────────────────── │  /v1/chat/completions   │
 │  OpenAI client   │      streamed tokens    └────────────┬────────────┘
 └──────────────────┘                                      │
-                                                          ▼
-                             ┌──────────────────────────────────────────────────────┐
-                             │  Router (Thompson-sampling bandit)                   │
-                             │   1. For each enabled model, sample a score:         │
-                             │        score = Beta(wins+2, losses+2) sample         │
-                             │              + INTELLIGENCE_WEIGHT × normalized rank │
-                             │              + SPEED_WEIGHT × (tok/s / max tok/s)    │
-                             │              + TTFB_WEIGHT × ttfb_score              │
-                             │              - slow-model penalty (if < 10 tok/s)    │
-                             │              - rate-limit penalty × 0.05             │
-                             │      (balanced: intelligence 10%, smart mode: 60%)   │
-                             │   2. Sort descending; sticky session pins preferred. │
-                             │   3. First model with a healthy, under-limit key     │
-                             │      wins; decrypt key, call provider SDK.           │
-                             │   4. On 429/5xx → key cooldown + retry next key.    │
-                             │      Model penalty only fires when all keys for      │
-                             │      that model are exhausted by 429s.               │
-                             └──────────────────────────────────────────────────────┘
-                                          │
-   ┌──────────────┬────────────┬──────────┴─────────┬─────────────┬──────────┐
-   ▼              ▼            ▼                    ▼             ▼          ▼
- Google         Groq        Cerebras           OpenRouter        HF       …10 more
+                                                           ▼
+                              ┌──────────────────────────────────────────────────────┐
+                              │  Router (Thompson-sampling bandit)                   │
+                              │   1. For each enabled model, sample a score:         │
+                              │        score = Beta(wins+2, losses+2) sample         │
+                              │              + INTELLIGENCE_WEIGHT × normalized rank │
+                              │              + SPEED_WEIGHT × (tok/s / max tok/s)    │
+                              │              + TTFB_WEIGHT × ttfb_score              │
+                              │              - slow-model penalty (if < 10 tok/s)    │
+                              │              - rate-limit penalty × 0.05             │
+                              │      (balanced: intelligence 10%, smart mode: 60%)   │
+                              │   2. Sort descending; sticky session pins preferred. │
+                              │   3. First model with a healthy, under-limit key     │
+                              │      wins; decrypt key, call provider SDK.           │
+                              │   4. On 429/5xx → key cooldown + retry next key.    │
+                              │      Model penalty only fires when all keys for      │
+                              │      that model are exhausted by 429s.               │
+                              └──────────────────────────────────────────────────────┘
+                                           │
+    ┌──────────────┬────────────┬──────────┴─────────┬─────────────┬──────────┐
+    ▼              ▼            ▼                    ▼             ▼          ▼
+  Google         Groq        Cerebras           OpenRouter        HF       …10 more
 ```
 
 - **Router** (`server/src/services/router.ts`) — Thompson-sampling multi-armed bandit. Samples from each model's Beta posterior over success rate, adds a normalized tok/s speed reward (models below 10 tok/s receive an active penalty), and subtracts a time-decaying rate-limit penalty for recent 429s. The bandit penalty is model-scoped and fires only when all keys for a model are exhausted by 429s in the current retry loop — a single key rate-limiting does not demote the model if other keys remain. Stochastic selection means the router naturally explores new models while converging on faster, more reliable ones as data accumulates.
@@ -422,6 +403,36 @@ Removed since the April 2026 review: Hugging Face, Moonshot, and MiniMax direct 
 ## Disclaimer
 
 **This project is for personal experimentation and learning, not production.** Free tiers exist so developers can prototype against them; they aren't a stable, supported inference substrate and shouldn't be treated as one. If you build something real on top of FreeLLMAPI, swap in a paid API before you ship. Your relationship with each upstream provider is governed by the terms you accepted when you created your account — those terms still apply when the traffic is proxied through this project, and you're responsible for complying with them.
+
+## Environment variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `ENCRYPTION_KEY` | Yes | 64-char hex key for AES-256-GCM at-rest key encryption. Generate with: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
+| `ADMIN_DASHBOARD_KEY` | Yes (prod) | Bearer token for all `/api/*` dashboard routes. Min 24 chars. Omitting it only works in `NODE_ENV=development`. Generate with: `node -e "console.log('freellmapi-admin-' + require('crypto').randomBytes(32).toString('hex'))"` |
+| `ADMIN_CORS_ORIGINS` | No | Comma-separated browser origins allowed to call `/api/*` cross-origin (e.g. `http://localhost:5173`). Same-origin deployments don't need this. |
+| `DISABLE_HSTS` | No | Set `true` to skip HSTS headers — useful when terminating TLS at a reverse proxy. |
+| `LOG_SENSITIVE_DATA` | No | Set `true` to log full request/response bodies. Off by default; never enable in production. |
+| `PORT` | No | Server port (default `3001`). |
+| `LLM_PROXY_URL` | No | Base URL of the llm-proxy router (e.g. `https://router.example.com` or `https://llm-proxy.<your-subdomain>.workers.dev`). Enables automatic proxy topology discovery at startup. If unset, IP capacity is disabled. |
+| `INTERNAL_AUTH_SECRET` | No | Must match llm-proxy's `INTERNAL_AUTH_SECRET`. Required for topology discovery when `LLM_PROXY_URL` is set. |
+
+> **Note:** `PROXY_COUNT` in `llm-proxy/.env` is managed by freellmapi-alpha's deploy process. Do not set it manually.
+
+## Proxy Topology Discovery
+
+When `LLM_PROXY_URL` is set, freellmapi-alpha fetches the proxy topology from llm-proxy at startup:
+
+```
+GET /internal/v1/topology
+Header: X-Internal-Auth: <INTERNAL_AUTH_SECRET>
+```
+
+This returns the deployed worker count and proxy list, eliminating the need to manually synchronize proxy count. The topology is deploy-authoritative — generated once during `pnpm run deploy-proxy` and served as an immutable constant.
+
+**Fallback chain:** dynamic topology → disabled (IP capacity off)
+
+Existing deployments without `LLM_PROXY_URL` continue to work exactly as before.
 
 ## License
 
