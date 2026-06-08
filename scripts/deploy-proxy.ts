@@ -57,6 +57,7 @@ interface DeployResult {
   attempts: number;
   error?: string;
   durationMs: number;
+  stdout?: string;
 }
 
 // ── Env loading ───────────────────────────────────────────────────────
@@ -116,7 +117,7 @@ function tomlStringify(obj: Record<string, unknown>, indent: string = ""): strin
 }
 
 function tomlValue(value: unknown): string {
-  if (typeof value === "string") return `"${value}"`;
+  if (typeof value === "string") return JSON.stringify(value);
   if (typeof value === "number") return value.toString();
   if (typeof value === "boolean") return value.toString();
   return `"${String(value)}"`;
@@ -177,6 +178,7 @@ function runWranglerDeploy(configPath: string): Promise<{ success: boolean; stdo
     let stdout = "";
     let stderr = "";
 
+    proc.on("error", (err) => { resolve({ success: false, stdout: "", stderr: err.message }); });
     proc.stdout?.on("data", (d: Buffer) => {
       stdout += d.toString();
     });
@@ -188,7 +190,7 @@ function runWranglerDeploy(configPath: string): Promise<{ success: boolean; stdo
       resolve({
         success: code === 0,
         stdout,
-        stderr: code === 0 ? "" : stderr || stdout,
+        stderr: stderr || "",
       });
     });
   });
@@ -203,7 +205,7 @@ async function deployWithRetry(worker: WorkerConfig): Promise<DeployResult> {
     const result = await runWranglerDeploy(worker.configPath);
 
     if (result.success) {
-      return { worker, success: true, attempts: attempt, durationMs: Date.now() - start };
+      return { worker, success: true, attempts: attempt, durationMs: Date.now() - start, stdout: result.stdout };
     }
 
     lastError = result.stderr;
@@ -348,16 +350,8 @@ export async function deployProxy(proxyCount?: number): Promise<void> {
     process.exit(1);
   }
 
-  // Re-run wrangler deploy to capture output (the deploy already succeeded above,
-  // but we need the stdout with the URL). We use `wrangler deploy` which is
-  // idempotent — it will just confirm the worker is up to date and print the URL.
-  // Actually, we already have the result from deployWithRetry, but runWranglerDeploy
-  // doesn't return stdout on success path. Let's run it once more to capture output.
-  console.log("\n📡 Capturing router URL...");
-  const routerDeployOutput = await runWranglerDeploy(routerConfigPath);
-
-  // Try stdout first, then stderr (wrangler sometimes prints to stderr)
-  const wranglerOutput = routerDeployOutput.stdout || routerDeployOutput.stderr || "";
+  // Capture URL from router deploy output (stdout already captured in deployWithRetry)
+  const wranglerOutput = routerResult.stdout || "";
   const routerUrl = captureRouterUrl(wranglerOutput);
 
   if (!routerUrl) {

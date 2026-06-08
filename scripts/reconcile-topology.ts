@@ -50,20 +50,10 @@ function parseEnvFile(filePath: string): Map<string, string> {
 // ── Expected worker count from DB ──────────────────────────────────────
 
 async function getExpectedWorkerCount(): Promise<number> {
-  // Dynamic import so the script can run standalone
-  const { initDb, getDb } = await import("../server/src/db/index.js");
-
-  // Initialize DB (safe to call multiple times — returns existing handle)
+  const { initDb } = await import("../server/src/db/index.js");
+  const { getRequiredWorkerCount } = await import("../server/src/services/capacityService.js");
   initDb();
-
-  const db = getDb();
-  const row = db.prepare(`
-    SELECT MAX(key_count) as max_count FROM (
-      SELECT COUNT(*) as key_count FROM api_keys WHERE enabled = 1 GROUP BY platform
-    )
-  `).get() as { max_count: number | null };
-
-  return row?.max_count && row.max_count > 0 ? row.max_count : 1;
+  return getRequiredWorkerCount();
 }
 
 // ── Topology fetch ─────────────────────────────────────────────────────
@@ -79,7 +69,7 @@ interface TopologySnapshot {
 async function fetchTopologyWorkerCount(
   proxyUrl: string,
   internalAuth: string,
-): Promise<number> {
+): Promise<{ ok: boolean; workerCount: number }> {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
@@ -93,7 +83,7 @@ async function fetchTopologyWorkerCount(
 
       if (!res.ok) {
         console.warn(`[reconcile] topology fetch failed with status ${res.status}`);
-        return 0;
+        return { ok: false, workerCount: 0 };
       }
 
       const data: unknown = await res.json();
@@ -103,18 +93,18 @@ async function fetchTopologyWorkerCount(
         "workerCount" in data &&
         typeof (data as TopologySnapshot).workerCount === "number"
       ) {
-        return (data as TopologySnapshot).workerCount;
+        return { ok: true, workerCount: (data as TopologySnapshot).workerCount };
       }
 
       console.warn("[reconcile] invalid topology response");
-      return 0;
+      return { ok: false, workerCount: 0 };
     } finally {
       clearTimeout(timeout);
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.warn(`[reconcile] topology unavailable (${message})`);
-    return 0;
+    return { ok: false, workerCount: 0 };
   }
 }
 
@@ -137,13 +127,14 @@ async function detectDrift(): Promise<DriftResult> {
   }
 
   const expected = await getExpectedWorkerCount();
-  const actual = await fetchTopologyWorkerCount(proxyUrl, internalAuth);
+  const topology = await fetchTopologyWorkerCount(proxyUrl, internalAuth);
 
-  // If topology fetch failed, skip reconciliation
-  if (actual === 0 && expected > 0) {
+  if (!topology.ok) {
     console.warn("[reconcile] topology unavailable, skipping reconciliation");
     return { drifted: false, actual: 0, expected: 0 };
   }
+
+  const actual = topology.workerCount;
 
   return {
     drifted: actual < expected,
@@ -184,7 +175,8 @@ async function reconcile(): Promise<void> {
   const frellmapiEnv = parseEnvFile(frellmapiEnvPath);
   const proxyUrl = frellmapiEnv.get("LLM_PROXY_URL");
   const internalAuth = frellmapiEnv.get("INTERNAL_AUTH_SECRET") ?? "";
-  const newActual = await fetchTopologyWorkerCount(proxyUrl, internalAuth);
+  const newTopology = await fetchTopologyWorkerCount(proxyUrl, internalAuth);
+  const newActual = newTopology.workerCount;
 
   if (newActual >= drift.expected) {
     console.log(`[reconcile] Success: ${newActual} workers now available`);

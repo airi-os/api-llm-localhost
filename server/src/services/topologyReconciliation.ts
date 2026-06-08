@@ -55,6 +55,9 @@ export async function reconcileTopology(): Promise<void> {
     },
   );
 
+  if (result.error) {
+    throw new Error(`[reconcile] Failed to start reconciliation process: ${result.error.message}`);
+  }
   if (result.status === 0) {
     console.log("[reconcile] Repair completed successfully");
   } else {
