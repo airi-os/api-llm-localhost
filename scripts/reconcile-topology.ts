@@ -12,6 +12,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseEnvFile } from "./lib/env.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -27,24 +28,6 @@ const isDryRun = args.includes("--dry-run");
 
 if (isDryRun) {
   console.log("=== DRY RUN — no changes will be made ===\n");
-}
-
-// ── Env helpers ────────────────────────────────────────────────────────
-
-function parseEnvFile(filePath: string): Map<string, string> {
-  const env = new Map<string, string>();
-  if (!fs.existsSync(filePath)) return env;
-  const content = fs.readFileSync(filePath, "utf-8");
-  for (const line of content.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const eq = trimmed.indexOf("=");
-    if (eq === -1) continue;
-    const key = trimmed.slice(0, eq).trim();
-    const val = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, "");
-    env.set(key, val);
-  }
-  return env;
 }
 
 // ── Expected worker count from DB ──────────────────────────────────────

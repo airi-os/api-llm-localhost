@@ -87,11 +87,7 @@ const primaryFill = 'var(--foreground)'
 type SortKey = 'displayName' | 'platform' | 'intelligenceRank' | 'requests' | 'successRate' | 'avgLatencyMs' | 'avgTtfbMs' | 'totalInputTokens' | 'totalOutputTokens' | 'outputTokensPerSec'
 type SortDir = 'asc' | 'desc'
 
-function sortModels(
-  rows: Record<SortKey, string | number | undefined>[],
-  key: SortKey,
-  dir: SortDir
-): Record<SortKey, string | number | undefined>[] {
+function sortModels(rows: ModelRow[], key: SortKey, dir: SortDir): ModelRow[] {
   return [...rows].sort((a, b) => {
     const av = a[key]
     const bv = b[key]
@@ -275,7 +271,7 @@ export default function AnalyticsPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {sortModels(byModel as Record<SortKey, string | number | undefined>[], sortKey, sortDir).map((m) => (
+                      {sortModels(byModel, sortKey, sortDir).map((m) => (
                         <TableRow key={m.displayName}>
                           <TableCell className="pl-4 text-sm font-medium">{m.displayName}</TableCell>
                           <TableCell className="text-xs text-muted-foreground">{m.platform}</TableCell>
@@ -284,8 +280,8 @@ export default function AnalyticsPage() {
                           <TableCell className="text-right tabular-nums">{m.successRate}%</TableCell>
                           <TableCell className="text-right tabular-nums">{m.avgLatencyMs} ms</TableCell>
                           <TableCell className="text-right tabular-nums">{m.avgTtfbMs != null ? `${m.avgTtfbMs} ms` : '—'}</TableCell>
-                          <TableCell className="text-right tabular-nums">{formatTokens(m.totalInputTokens as number | undefined)}</TableCell>
-                          <TableCell className="text-right tabular-nums">{formatTokens(m.totalOutputTokens as number | undefined)}</TableCell>
+                          <TableCell className="text-right tabular-nums">{formatTokens(m.totalInputTokens)}</TableCell>
+                          <TableCell className="text-right tabular-nums">{formatTokens(m.totalOutputTokens)}</TableCell>
                           <TableCell className="text-right tabular-nums pr-4">{m.outputTokensPerSec != null ? m.outputTokensPerSec : '—'}</TableCell>
                         </TableRow>
                       ))}
