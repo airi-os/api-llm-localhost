@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import readline from 'node:readline';
-import { parseEnvFile, readEnvFileRaw, writeEnvFile, updateEnvKey } from './lib/env.js';
+import { parseEnvFile, readEnvFileRaw, writeEnvFile } from './lib/env.js';
 import { generateHexSecret, generateAdminKey, generateAuthKey } from './lib/crypto.js';
 
 const __filename = fileURLToPath(import.meta.url);

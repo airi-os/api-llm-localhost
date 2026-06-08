@@ -13,7 +13,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseEnvFile, readEnvFileRaw, updateEnvKey } from "./lib/env.js";
+import { parseEnvFile, updateEnvKey } from "./lib/env.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -377,9 +377,12 @@ export async function deployProxy(proxyCount?: number): Promise<void> {
   console.log(`   ✅ Router URL: ${routerUrl}`);
 
   // Write LLM_PROXY_URL to .env
-  console.log("\n📝 Writing LLM_PROXY_URL to .env...");
+  console.log("\n📝 Writing LLM_PROXY_URL and ROUTER_DOMAIN to .env files...");
   updateEnvKey(frellmapiEnvPath, "LLM_PROXY_URL", routerUrl, false);
-  console.log(`   ✅ LLM_PROXY_URL written to .env`);
+  // Write bare domain to llm-proxy/.env as ROUTER_DOMAIN (for backward compat)
+  const bareDomain = routerUrl.replace(\/^https?:\/\//, "");
+  updateEnvKey(llmProxyEnvPath, "ROUTER_DOMAIN", bareDomain, false);
+  console.log(`   ✅ LLM_PROXY_URL and ROUTER_DOMAIN written to .env files`);
 
   const totalFailed = allResults.filter((r) => !r.success).length;
   if (totalFailed > 0) {

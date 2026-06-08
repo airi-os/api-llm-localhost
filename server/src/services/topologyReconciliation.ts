@@ -47,6 +47,7 @@ export async function reconcileTopology(): Promise<void> {
   const child = spawn("npx", ["tsx", scriptPath], {
     cwd: projectRoot,
     stdio: "inherit",
+    shell: true,
   });
 
   child.on("error", (err) => {
