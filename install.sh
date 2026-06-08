@@ -151,5 +151,4 @@ ok "Installation complete!"
 echo
 echo "Next steps:"
 echo "  pnpm dev                        Start local development"
-echo "  cd llm-proxy && npm run deploy  Deploy proxy to Cloudflare"
 echo "  pnpm run verify                 Verify deployment"

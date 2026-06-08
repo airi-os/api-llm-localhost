@@ -11,6 +11,48 @@ import { PageHeader } from '@/components/page-header'
 
 type TimeRange = '24h' | '7d' | '30d'
 
+interface AnalyticsSummary {
+  totalRequests?: number
+  successRate?: number
+  totalInputTokens?: number
+  totalOutputTokens?: number
+  avgLatencyMs?: number
+  estimatedCostSavings?: number
+}
+
+interface PlatformRow {
+  platform: string
+  requests: number
+  successRate: number
+  outputTokensPerSec?: number
+  [key: string]: unknown
+}
+
+interface TimelineRow {
+  timestamp: string
+  successCount: number
+  failureCount: number
+}
+
+interface ModelRow {
+  displayName: string
+  platform: string
+  intelligenceRank?: number
+  requests: number
+  successRate: number
+  avgLatencyMs: number
+  avgTtfbMs?: number
+  totalInputTokens?: number
+  totalOutputTokens?: number
+  outputTokensPerSec?: number
+}
+
+interface ErrorRow {
+  id: string
+  platform: string
+  error: string
+  createdAt: string
+}
 function formatTokens(n?: number): string {
   if (!n) return '0'
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
@@ -46,10 +88,10 @@ type SortKey = 'displayName' | 'platform' | 'intelligenceRank' | 'requests' | 's
 type SortDir = 'asc' | 'desc'
 
 function sortModels(
-  rows: Record<SortKey, string | number>[],
+  rows: Record<SortKey, string | number | undefined>[],
   key: SortKey,
   dir: SortDir
-): Record<SortKey, string | number>[] {
+): Record<SortKey, string | number | undefined>[] {
   return [...rows].sort((a, b) => {
     const av = a[key]
     const bv = b[key]
@@ -96,30 +138,30 @@ export default function AnalyticsPage() {
 
   const { data: summary } = useQuery({
     queryKey: ['analytics', 'summary', range],
-    queryFn: () => apiFetch<unknown>(`/api/analytics/summary?range=${range}`),
+    queryFn: () => apiFetch<AnalyticsSummary>(`/api/analytics/summary?range=${range}`),
   })
 
   const { data: byPlatform = [] } = useQuery({
     queryKey: ['analytics', 'by-platform', range],
-    queryFn: () => apiFetch<unknown[]>(`/api/analytics/by-platform?range=${range}`),
+    queryFn: () => apiFetch<PlatformRow[]>(`/api/analytics/by-platform?range=${range}`),
   })
 
   const { data: timeline = [] } = useQuery({
     queryKey: ['analytics', 'timeline', range],
-    queryFn: () => apiFetch<unknown[]>(`/api/analytics/timeline?range=${range}`),
+    queryFn: () => apiFetch<TimelineRow[]>(`/api/analytics/timeline?range=${range}`),
   })
 
   const { data: byModel = [] } = useQuery({
     queryKey: ['analytics', 'by-model', range],
-    queryFn: () => apiFetch<unknown[]>(`/api/analytics/by-model?range=${range}`),
+    queryFn: () => apiFetch<ModelRow[]>(`/api/analytics/by-model?range=${range}`),
   })
 
   const { data: errors = [] } = useQuery({
     queryKey: ['analytics', 'errors', range],
-    queryFn: () => apiFetch<unknown[]>(`/api/analytics/errors?range=${range}`),
+    queryFn: () => apiFetch<ErrorRow[]>(`/api/analytics/errors?range=${range}`),
   })
 
-  const byPlatformWithFailures = byPlatform.map((p: { requests: number; successRate: number; [key: string]: unknown }) => {
+  const byPlatformWithFailures = byPlatform.map((p: PlatformRow) => {
     const failed = Math.round(p.requests * (100 - p.successRate) / 100)
     return { ...p, successRequests: p.requests - failed, failedRequests: failed }
   })
@@ -233,7 +275,7 @@ export default function AnalyticsPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {sortModels(byModel, sortKey, sortDir).map((m) => (
+                      {sortModels(byModel as Record<SortKey, string | number | undefined>[], sortKey, sortDir).map((m) => (
                         <TableRow key={m.displayName}>
                           <TableCell className="pl-4 text-sm font-medium">{m.displayName}</TableCell>
                           <TableCell className="text-xs text-muted-foreground">{m.platform}</TableCell>
@@ -242,8 +284,8 @@ export default function AnalyticsPage() {
                           <TableCell className="text-right tabular-nums">{m.successRate}%</TableCell>
                           <TableCell className="text-right tabular-nums">{m.avgLatencyMs} ms</TableCell>
                           <TableCell className="text-right tabular-nums">{m.avgTtfbMs != null ? `${m.avgTtfbMs} ms` : '—'}</TableCell>
-                          <TableCell className="text-right tabular-nums">{formatTokens(m.totalInputTokens)}</TableCell>
-                          <TableCell className="text-right tabular-nums">{formatTokens(m.totalOutputTokens)}</TableCell>
+                          <TableCell className="text-right tabular-nums">{formatTokens(m.totalInputTokens as number | undefined)}</TableCell>
+                          <TableCell className="text-right tabular-nums">{formatTokens(m.totalOutputTokens as number | undefined)}</TableCell>
                           <TableCell className="text-right tabular-nums pr-4">{m.outputTokensPerSec != null ? m.outputTokensPerSec : '—'}</TableCell>
                         </TableRow>
                       ))}
@@ -268,7 +310,7 @@ export default function AnalyticsPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {errors.slice(0, 20).map((e: { id: string; platform: string; error: string; createdAt: string }) => (
+                    {errors.slice(0, 20).map((e: ErrorRow) => (
                       <TableRow key={e.id}>
                         <TableCell className="pl-4 text-xs">{e.platform}</TableCell>
                         <TableCell className="text-xs max-w-[200px] truncate">{e.error}</TableCell>

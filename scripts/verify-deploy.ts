@@ -1,12 +1,13 @@
 // Verify Deploy — Post-Deployment Verification
 //
 // Checks that the deployment is working correctly:
-//   1. llm-proxy deployment is reachable
-//   2. Topology endpoint returns HTTP 200
-//   3. Topology response validates against schema
-//   4. freellmapi server is running (end-to-end)
-//   5. Discovered worker count is valid (>= 0)
-//   6. Fallback mode is reported correctly when dynamic topology unavailable
+//   1. LLM_PROXY_URL is set in .env
+//   2. llm-proxy deployment is reachable
+//   3. Topology endpoint returns HTTP 200
+//   4. Topology response validates against schema
+//   5. freellmapi server is running (end-to-end)
+//   6. Discovered worker count is valid (>= 0)
+//   7. Fallback mode is reported correctly when dynamic topology unavailable
 //
 // Usage:
 //   pnpm run verify           — run verification
@@ -93,25 +94,48 @@ async function main(): Promise<void> {
   const llmProxyUrl = env.get('LLM_PROXY_URL');
   const internalAuth = env.get('INTERNAL_AUTH_SECRET');
 
+  // ── Check 1: LLM_PROXY_URL is set ───────────────────────────────────
+
+  if (llmProxyUrl) {
+    const isWorkersDev = llmProxyUrl.includes('workers.dev');
+    const detail = isWorkersDev
+      ? `${llmProxyUrl} (zero-config deployment via workers.dev)`
+      : llmProxyUrl;
+    pass('1. LLM_PROXY_URL set', detail);
+  } else {
+    fail('1. LLM_PROXY_URL set', 'LLM_PROXY_URL not set in .env');
+  }
+
+  // ── Check 2: PROXY_IP_COUNT deprecation warning ─────────────────────
+
+  const proxyIpCount = env.get('PROXY_IP_COUNT');
+  if (proxyIpCount) {
+    pass('2. PROXY_IP_COUNT deprecated', `PROXY_IP_COUNT=${proxyIpCount} is set but deprecated — dynamic topology is now the primary source`);
+  } else {
+    pass('2. PROXY_IP_COUNT deprecated', 'Not set — dynamic topology is the primary source');
+  }
+
   if (!llmProxyUrl) {
-    fail('Configuration', 'LLM_PROXY_URL not set in .env');
+    fail('Configuration', 'LLM_PROXY_URL not set in .env — remaining checks will likely fail');
     printResults();
     process.exit(1);
   }
 
   if (isDryRun) {
     console.log('  [dry-run] Would execute the following checks:\n');
-    console.log('  1. Check llm-proxy deployment reachability');
-    console.log('  2. Check topology endpoint returns HTTP 200');
-    console.log('  3. Check topology response schema validation');
-    console.log('  4. Check freellmapi server is running (end-to-end)');
-    console.log('  5. Check workerCount >= 0');
-    console.log('  6. Check fallback mode reporting');
+    console.log('  1. Check LLM_PROXY_URL is set in .env');
+    console.log('  2. Check PROXY_IP_COUNT deprecation status');
+    console.log('  3. Check llm-proxy deployment reachability');
+    console.log('  4. Check topology endpoint returns HTTP 200');
+    console.log('  5. Check topology response schema validation');
+    console.log('  6. Check freellmapi server is running (end-to-end)');
+    console.log('  7. Check workerCount >= 0');
+    console.log('  8. Check fallback mode reporting');
     console.log('\n  Dry run complete. No network calls were made.');
     process.exit(0);
   }
 
-  // ── Check 1: llm-proxy deployment reachable ────────────────────────
+  // ── Check 3: llm-proxy deployment reachable ────────────────────────
 
   try {
     const controller = new AbortController();
@@ -122,16 +146,16 @@ async function main(): Promise<void> {
     });
     clearTimeout(timeout);
     void res; // We only care about reachability
-    pass('1. llm-proxy reachable', llmProxyUrl);
+    pass('3. llm-proxy reachable', llmProxyUrl);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    fail('1. llm-proxy reachable', msg);
+    fail('3. llm-proxy reachable', msg);
     // If we can't reach the proxy, remaining checks will likely fail too
     printResults();
     process.exit(1);
   }
 
-  // ── Check 2: Topology endpoint returns HTTP 200 ─────────────────────
+  // ── Check 4: Topology endpoint returns HTTP 200 ─────────────────────
 
   let topologyData: unknown = null;
   try {
@@ -141,39 +165,39 @@ async function main(): Promise<void> {
     }
     const res = await fetch(`${llmProxyUrl}/internal/v1/topology`, { headers });
     if (res.ok) {
-      pass('2. Topology endpoint HTTP 200', `Status: ${res.status}`);
+      pass('4. Topology endpoint HTTP 200', `Status: ${res.status}`);
       topologyData = await res.json();
     } else {
-      fail('2. Topology endpoint HTTP 200', `Status: ${res.status}`);
+      fail('4. Topology endpoint HTTP 200', `Status: ${res.status}`);
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    fail('2. Topology endpoint HTTP 200', msg);
+    fail('4. Topology endpoint HTTP 200', msg);
   }
 
-  // ── Check 3: Topology schema validation ─────────────────────────────
+  // ── Check 5: Topology schema validation ─────────────────────────────
 
   if (topologyData !== null) {
     if (isValidTopology(topologyData)) {
-      pass('3. Topology schema valid', `schemaVersion=${topologyData.schemaVersion}, proxies=${topologyData.proxies.length}`);
+      pass('5. Topology schema valid', `schemaVersion=${topologyData.schemaVersion}, proxies=${topologyData.proxies.length}`);
     } else {
-      fail('3. Topology schema valid', 'Response does not match expected topology schema');
+      fail('5. Topology schema valid', 'Response does not match expected topology schema');
     }
 
-    // ── Check 5: workerCount >= 0 ─────────────────────────────────────
+    // ── Check 7: workerCount >= 0 ─────────────────────────────────────
 
     const workerCount = (topologyData as TopologyResponse).workerCount;
     if (workerCount >= 0) {
-      pass('5. Worker count valid', `workerCount=${workerCount}`);
+      pass('7. Worker count valid', `workerCount=${workerCount}`);
     } else {
-      fail('5. Worker count valid', `workerCount=${workerCount} (expected >= 0)`);
+      fail('7. Worker count valid', `workerCount=${workerCount} (expected >= 0)`);
     }
   } else {
-    fail('3. Topology schema valid', 'Skipped (no topology data)');
-    fail('5. Worker count valid', 'Skipped (no topology data)');
+    fail('5. Topology schema valid', 'Skipped (no topology data)');
+    fail('7. Worker count valid', 'Skipped (no topology data)');
   }
 
-  // ── Check 4: freellmapi server is running (end-to-end) ──────────────
+  // ── Check 6: freellmapi server is running (end-to-end) ──────────────
 
   try {
     const serverPort = env.get('PORT') || '3001';
@@ -182,28 +206,27 @@ async function main(): Promise<void> {
     });
     if (serverRes.ok) {
       const pingData = await serverRes.json() as { status?: string };
-      pass('4. freellmapi server running', `Server responded: ${pingData.status ?? 'ok'}`);
+      pass('6. freellmapi server running', `Server responded: ${pingData.status ?? 'ok'}`);
     } else {
-      fail('4. freellmapi server running', `Server responded with status ${serverRes.status}`);
+      fail('6. freellmapi server running', `Server responded with status ${serverRes.status}`);
     }
   } catch {
     // Server not running — this is optional, not a hard fail
-    pass('4. freellmapi server running', 'Server not running (optional check skipped)');
+    pass('6. freellmapi server running', 'Server not running (optional check skipped)');
   }
 
-  // ── Check 6: Fallback mode reporting ────────────────────────────────
+  // ── Check 8: Fallback mode reporting ────────────────────────────────
 
-  const proxyIpCount = env.get('PROXY_IP_COUNT');
   if (!llmProxyUrl) {
-    pass('6. Fallback mode', 'LLM_PROXY_URL not set — topology discovery will be skipped');
+    pass('8. Fallback mode', 'LLM_PROXY_URL not set — topology discovery will be skipped');
   } else if (topologyData === null) {
     if (proxyIpCount) {
-      pass('6. Fallback mode', `Topology unavailable, PROXY_IP_COUNT=${proxyIpCount} will be used as fallback`);
+      pass('8. Fallback mode', `Topology unavailable, PROXY_IP_COUNT=${proxyIpCount} will be used as fallback (deprecated)`);
     } else {
-      pass('6. Fallback mode', 'Topology unavailable, PROXY_IP_COUNT not set — IP capacity disabled');
+      pass('8. Fallback mode', 'Topology unavailable, PROXY_IP_COUNT not set — IP capacity disabled');
     }
   } else {
-    pass('6. Fallback mode', 'Dynamic topology is available');
+    pass('8. Fallback mode', 'Dynamic topology is available');
   }
 
   // ── Results ─────────────────────────────────────────────────────────

@@ -10,7 +10,9 @@
     "setup": "tsx scripts/setup.ts",
     "sync-secrets": "tsx scripts/sync-secrets.ts",
     "verify": "tsx scripts/verify-deploy.ts",
-    "rotate-secrets": "tsx scripts/rotate-secrets.ts"
+    "rotate-secrets": "tsx scripts/rotate-secrets.ts",
+    "deploy-proxy": "tsx scripts/deploy-proxy.ts",
+    "reconcile-topology": "tsx scripts/reconcile-topology.ts"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",

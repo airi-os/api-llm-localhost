@@ -4,15 +4,16 @@
 // creates .env files from templates, and populates missing configuration.
 //
 // Usage:
-//   pnpm run setup           — interactive setup
-//   pnpm run setup -- --dry-run  — report actions without writing
-//   pnpm run setup -- --regenerate — overwrite existing values
+//   pnpm run setup           — non-interactive setup (default: auto-generate all secrets, deploy proxy)
+//   pnpm run setup -- --interactive  — interactive setup (prompts for secrets)
+//   pnpm run setup -- --dry-run      — report actions without writing
+//   pnpm run setup -- --regenerate   — overwrite existing values
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import readline from 'node:readline';
-import { parseEnvFile, readEnvFileRaw, writeEnvFile } from './lib/env.js';
+import { parseEnvFile, readEnvFileRaw, writeEnvFile, updateEnvKey } from './lib/env.js';
 import { generateHexSecret, generateAdminKey, generateAuthKey } from './lib/crypto.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -29,6 +30,7 @@ const llmProxyEnvExample = path.join(llmProxyRoot, '.env.example');
 const args = process.argv.slice(2);
 const isDryRun = args.includes('--dry-run');
 const isRegenerate = args.includes('--regenerate');
+const isInteractive = args.includes('--interactive');
 
 if (isDryRun) {
   console.log('=== DRY RUN — no changes will be made ===\n');
@@ -164,13 +166,21 @@ async function main(): Promise<void> {
     }
   }
 
-  // AUTH_KEY — prompt user
+  // AUTH_KEY — auto-generate in non-interactive mode, prompt in interactive mode
   if (isRegenerate || !llmProxyEnv.has('AUTH_KEY') || !llmProxyEnv.get('AUTH_KEY')) {
-    const suggested = generateAuthKey();
-    const authKey = await prompt('Enter AUTH_KEY (or press Enter for random):', suggested);
-    if (authKey) {
-      logAction('set', 'AUTH_KEY', 'llm-proxy/.env');
+    if (!isInteractive) {
+      // Non-interactive: auto-generate without prompt
+      const authKey = generateAuthKey();
+      logAction('generate', 'AUTH_KEY', 'llm-proxy/.env');
       llmProxyUpdates.set('AUTH_KEY', authKey);
+    } else {
+      // Interactive: prompt user
+      const suggested = generateAuthKey();
+      const authKey = await prompt('Enter AUTH_KEY (or press Enter for random):', suggested);
+      if (authKey) {
+        logAction('set', 'AUTH_KEY', 'llm-proxy/.env');
+        llmProxyUpdates.set('AUTH_KEY', authKey);
+      }
     }
   } else {
     console.log('  preserved: AUTH_KEY (already set)');
@@ -180,20 +190,26 @@ async function main(): Promise<void> {
 
   console.log('\n── Router Configuration ──');
 
-  const existingRouterDomain = llmProxyEnv.get('ROUTER_DOMAIN') || 'router.example.com';
-  const routerDomain = await prompt('Enter router domain:', existingRouterDomain);
+  if (isInteractive) {
+    // Interactive mode: preserve existing prompt behavior
+    const existingRouterDomain = llmProxyEnv.get('ROUTER_DOMAIN') || 'router.example.com';
+    const routerDomain = await prompt('Enter router domain:', existingRouterDomain);
 
-  if (routerDomain && routerDomain !== existingRouterDomain) {
-    logAction('set', 'ROUTER_DOMAIN', 'llm-proxy/.env');
-    llmProxyUpdates.set('ROUTER_DOMAIN', routerDomain);
-  }
+    if (routerDomain && routerDomain !== existingRouterDomain) {
+      logAction('set', 'ROUTER_DOMAIN', 'llm-proxy/.env');
+      llmProxyUpdates.set('ROUTER_DOMAIN', routerDomain);
+    }
 
-  const llmProxyUrl = `https://${routerDomain}`;
-  if (!frellmapiEnv.has('LLM_PROXY_URL') || isRegenerate) {
-    logAction('set', 'LLM_PROXY_URL', '.env');
-    frellmapiUpdates.set('LLM_PROXY_URL', llmProxyUrl);
+    const llmProxyUrl = `https://${routerDomain}`;
+    if (!frellmapiEnv.has('LLM_PROXY_URL') || isRegenerate) {
+      logAction('set', 'LLM_PROXY_URL', '.env');
+      frellmapiUpdates.set('LLM_PROXY_URL', llmProxyUrl);
+    } else {
+      console.log('  preserved: LLM_PROXY_URL=' + frellmapiEnv.get('LLM_PROXY_URL'));
+    }
   } else {
-    console.log('  preserved: LLM_PROXY_URL=' + frellmapiEnv.get('LLM_PROXY_URL'));
+    // Non-interactive mode: skip ROUTER_DOMAIN entirely, deploy-proxy handles it
+    console.log('  ROUTER_DOMAIN and LLM_PROXY_URL will be configured by deploy-proxy');
   }
 
   // ── Step 5: Write updates ───────────────────────────────────────────
@@ -218,19 +234,33 @@ async function main(): Promise<void> {
     console.log('  No changes needed in llm-proxy/.env');
   }
 
-  // ── Step 6: Summary ─────────────────────────────────────────────────
+  // ── Step 6: Deploy proxy (non-interactive mode only) ─────────────────
+
+  if (!isDryRun && !isInteractive) {
+    console.log('\n── Deploying llm-proxy ──');
+    const { deployProxy } = await import('./deploy-proxy.js');
+    await deployProxy();
+  } else if (isDryRun && !isInteractive) {
+    console.log('\n  [dry-run] Would run: pnpm run deploy-proxy');
+  }
+
+  // ── Step 7: Summary ─────────────────────────────────────────────────
 
   console.log('\n── Summary ──');
   if (isDryRun) {
     console.log('  Dry run complete. No files were modified.');
-  } else {
+  } else if (isInteractive) {
     console.log('  Configuration complete.');
+    console.log('\nNext steps:');
+    console.log('  pnpm dev                  Start local development');
+    console.log('  cd llm-proxy && npm run deploy   Deploy proxy to Cloudflare');
+    console.log('  pnpm run verify           Verify deployment');
+  } else {
+    console.log('  Installation complete. llm-proxy deployed.');
+    console.log('\nNext steps:');
+    console.log('  pnpm dev                  Start local development');
+    console.log('  pnpm run verify           Verify deployment');
   }
-
-  console.log('\nNext steps:');
-  console.log('  pnpm dev                  Start local development');
-  console.log('  cd llm-proxy && npm run deploy   Deploy proxy to Cloudflare');
-  console.log('  pnpm run verify           Verify deployment');
 }
 
 main()

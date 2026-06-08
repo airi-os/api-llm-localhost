@@ -5,6 +5,7 @@ import { initDb } from './db/index.js';
 import { assertAdminAuthConfigured } from './middleware/adminAuth.js';
 import { startHealthChecker } from './services/health.js';
 import { initialize as initTopology } from './services/proxyTopology.js';
+import { reconcileTopology } from './services/topologyReconciliation.js';
 
 const PORT = process.env.PORT ?? 3001;
 
@@ -12,6 +13,7 @@ async function main() {
   assertAdminAuthConfigured();
   initDb();
   await initTopology();
+  await reconcileTopology();
   const app = createApp();
 
   const server = app.listen(Number(PORT), '0.0.0.0', () => {

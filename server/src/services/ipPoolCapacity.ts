@@ -7,13 +7,21 @@
 //   - Each IP slot serves 1 session at a time (conservative).
 //   - LongCat: 1 session per IP (IP-bound regardless of key count).
 //
-// When PROXY_IP_COUNT is unset or 0, all capacity checks pass through
-// (backward compatible — no IP awareness).
+// Worker count is derived exclusively from dynamic topology.
+// The PROXY_IP_COUNT env var is deprecated and ignored.
 //
 // In-memory only, following the same pattern as ratelimit.ts.
 
 import { getWorkerCount as getTopologyWorkerCount, isDynamicTopologyAvailable } from "./proxyTopology.js";
 import crypto from "crypto";
+
+// Deprecation warning for PROXY_IP_COUNT
+if (process.env.PROXY_IP_COUNT !== undefined) {
+  console.warn(
+    "[deprecation] PROXY_IP_COUNT is deprecated and ignored. " +
+    "Worker count is now derived from provider API keys via dynamic topology.",
+  );
+}
 
 /**
  * Short hash of an API key for logging — exposes only the first 12 hex chars
@@ -49,55 +57,29 @@ const DEFAULT_TTL_MS = 30 * 60 * 1000; // matches STICKY_TTL_MS
 // ---------------------------------------------------------------------------
 
 /**
- * Returns the configured number of proxy workers.
+ * Returns the number of proxy workers from dynamic topology.
  *
- * Fallback chain:
- *   1. Dynamic topology (if available at startup)
- *   2. PROXY_IP_COUNT env var (backward compatibility)
- *   0. 0 (disabled)
- *
- * Uses isDynamicTopologyAvailable() rather than count > 0 because a
- * zero-worker topology is still dynamically available (intentionally
- * disables IP capacity limits).
+ * Worker count is now derived exclusively from the topology endpoint.
+ * Returns 0 when dynamic topology is unavailable (disabled).
  */
 export function getWorkerCount(): number {
   if (isDynamicTopologyAvailable()) {
     return getTopologyWorkerCount();
   }
-
-  const raw = process.env.PROXY_IP_COUNT;
-  const count = raw ? parseInt(raw, 10) : 0;
-  return Number.isInteger(count) && count > 0 ? count : 0;
+  return 0;
 }
 
-/** @deprecated Use getWorkerCount() instead. */
-export function getIpCount(): number {
-  return getWorkerCount();
-}
-
-/** True when PROXY_IP_COUNT is set to a positive integer. */
+/** True when dynamic topology reports workers available. */
 export function isIpCapacityEnabled(): boolean {
   return getWorkerCount() > 0;
 }
 
 /**
  * Check if sticky routing is enabled.
-/**
- * Check if sticky routing is enabled.
- * Returns true when either dynamic topology is available or PROXY_IP_COUNT is a valid non-negative integer.
- * Invalid PROXY_IP_COUNT values (e.g. "abc", "-1") fall back to dynamic topology availability.
+ * Returns true when dynamic topology is available.
  */
 export function isStickyRoutingEnabled(): boolean {
-  const raw = process.env.PROXY_IP_COUNT;
-  if (raw === undefined || raw.trim() === '') {
-    return isDynamicTopologyAvailable();
-  }
-  const envCount = Number(raw);
-  if (!Number.isInteger(envCount) || envCount < 0) {
-    // Invalid value — fall back to dynamic topology
-    return isDynamicTopologyAvailable();
-  }
-  return true;
+  return isDynamicTopologyAvailable();
 }
 
 // ---------------------------------------------------------------------------
@@ -234,7 +216,7 @@ export function releaseIp(_sessionKey: string): void {
 
 /**
  * Check whether there is IP capacity available in the global pool.
- * Returns true when PROXY_IP_COUNT is unset (no limit).
+ * Returns true when dynamic topology is unavailable (no limit).
  *
  * Note: This checks global pool occupancy (any platform), consistent with
  * allocateIp which treats all occupied slots as unavailable.
@@ -257,15 +239,15 @@ export function hasIpCapacity(apiKey?: string): boolean {
  * Return current IP usage for a platform.
  * When IP capacity is disabled, returns { used: 0, max: 0 }.
  *
- * Note: max is the global ipCount (shared across platforms).
+ * Note: max is the global worker count (shared across platforms).
  * used is the number of assigned workers.
  */
 export function getIpCapacityStatus(_platform: string): { used: number; max: number } {
   if (!isIpCapacityEnabled()) return { used: 0, max: 0 };
 
-  const ipCount = getWorkerCount();
+  const workerCount = getWorkerCount();
   const used = workerToApiKey.size;
-  return { used, max: ipCount };
+  return { used, max: workerCount };
 }
 
 // ---------------------------------------------------------------------------
